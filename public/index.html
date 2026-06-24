@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Manifestação de Interesse Municipal</title>
+    <style>
+      /* Design tokens que o componente usa via CSS variables */
+      :root {
+        --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        --font-mono: 'Courier New', monospace;
+        --font-serif: Georgia, serif;
+        --border-radius-md: 8px;
+        --border-radius-lg: 12px;
+        --border-radius-xl: 16px;
+
+        /* Backgrounds */
+        --color-background-primary: #ffffff;
+        --color-background-secondary: #f5f5f4;
+        --color-background-tertiary: #eeede8;
+        --color-background-info: #e6f1fb;
+        --color-background-success: #eaf3de;
+        --color-background-warning: #faeeda;
+        --color-background-danger: #fcebeb;
+
+        /* Text */
+        --color-text-primary: #1a1a1a;
+        --color-text-secondary: #6b6b6b;
+        --color-text-tertiary: #9b9b9b;
+        --color-text-info: #185fa5;
+        --color-text-success: #3b6d11;
+        --color-text-warning: #854f0b;
+        --color-text-danger: #a32d2d;
+
+        /* Borders */
+        --color-border-tertiary: rgba(0,0,0,0.12);
+        --color-border-secondary: rgba(0,0,0,0.22);
+        --color-border-primary: rgba(0,0,0,0.35);
+        --color-border-info: #185fa5;
+        --color-border-success: #3b6d11;
+        --color-border-warning: #854f0b;
+        --color-border-danger: #a32d2d;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --color-background-primary: #1e1e1e;
+          --color-background-secondary: #2a2a2a;
+          --color-background-tertiary: #333333;
+          --color-background-info: #0c2a45;
+          --color-background-success: #162808;
+          --color-background-warning: #3a2004;
+          --color-background-danger: #3a0c0c;
+
+          --color-text-primary: #f0f0f0;
+          --color-text-secondary: #a0a0a0;
+          --color-text-tertiary: #666666;
+          --color-text-info: #85b7eb;
+          --color-text-success: #c0dd97;
+          --color-text-warning: #fac775;
+          --color-text-danger: #f09595;
+
+          --color-border-tertiary: rgba(255,255,255,0.12);
+          --color-border-secondary: rgba(255,255,255,0.22);
+          --color-border-primary: rgba(255,255,255,0.35);
+        }
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 16px;
+        background: var(--color-background-tertiary);
+        color: var(--color-text-primary);
+        font-family: var(--font-sans);
+      }
+
+      /* Inputs e selects globais */
+      input, select, textarea {
+        font-family: var(--font-sans);
+        outline: none;
+        transition: border-color .15s;
+      }
+      input:focus, select:focus, textarea:focus {
+        border-color: var(--color-border-primary) !important;
+      }
+
+      /* Scrollbar sutil */
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: var(--color-border-secondary); border-radius: 3px; }
+
+      /* Editor contenteditable placeholder */
+      [contenteditable]:empty:before {
+        content: attr(data-placeholder);
+        color: var(--color-text-tertiary);
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
