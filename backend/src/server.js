@@ -6,19 +6,30 @@ import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import multer from "multer";
+import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { config } from "./config.js";
 import { initDb, getDb } from "./db.js";
 import { appendAuditLog, verifyAuditEntry } from "./audit.js";
-import { authRequired, login, signToken } from "./auth.js";
+import { authRequired, login, signToken, generateCsrfToken } from "./auth.js";
 import { sendNotification } from "./notifications.js";
 
 const app = express();
-app.use(cors());
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      if (config.corsOrigins.includes(origin)) return cb(null, true);
+      return cb(new Error("Origem não permitida por CORS"));
+    },
+    credentials: true,
+  })
+);
 app.use(helmet());
 app.use(express.json({ limit: "4mb" }));
+app.use(cookieParser(config.cookieSecret));
 app.use(morgan("dev"));
 app.use(
   rateLimit({
@@ -48,6 +59,7 @@ const PERMISSIONS = {
   "dashboard:read": ["admin", "juridico", "operador", "auditor"],
   "alerts:read": ["admin", "juridico", "operador", "auditor"],
   "alerts:notify": ["admin", "juridico", "operador"],
+  "ai:write": ["admin", "juridico", "operador", "auditor"],
 };
 
 function requirePermission(permission) {
@@ -86,9 +98,17 @@ function checksumFile(filePath) {
 
 function parsePeriod(query) {
   const { from, to } = query;
-  const fromIso = from ? new Date(from).toISOString() : null;
-  const toIso = to ? new Date(to).toISOString() : null;
-  return { fromIso, toIso };
+  const parseDate = (value) => {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.toISOString();
+  };
+
+  const fromIso = parseDate(from);
+  const toIso = parseDate(to);
+  const invalid = (from && !fromIso) || (to && !toIso);
+  return { fromIso, toIso, invalid };
 }
 
 function loginAttemptKey(ip, email) {
@@ -134,6 +154,13 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "manifestacao-backend" });
 });
 
+app.get("/api/csrf-token", (req, res) => {
+  const token = generateCsrfToken();
+  const hmac = crypto.createHmac("sha256", config.csrfSecret).update(token).digest("hex");
+  res.cookie("x-csrf-token", hmac, config.cookieSettings);
+  return res.json({ token });
+});
+
 app.post("/api/auth/login", async (req, res) => {
   const schema = z.object({
     email: z.string().email(),
@@ -173,7 +200,80 @@ app.post("/api/auth/login", async (req, res) => {
     payload: { ip: req.ip },
   });
 
-  return res.json({ token, user });
+  res.cookie("auth_token", token, config.cookieSettings);
+  return res.json({ token, user, message: "Autenticado com sucesso. Token no cookie HttpOnly." });
+});
+
+app.post("/api/auth/logout", authRequired, async (req, res) => {
+  await appendAuditLog({
+    actor: req.user,
+    action: "auth.logout",
+    resourceType: "auth",
+    payload: {},
+  });
+  res.clearCookie("auth_token", config.cookieSettings);
+  return res.json({ message: "Desconectado com sucesso" });
+});
+
+app.post("/api/auth/me", authRequired, async (req, res) => {
+  return res.json({ user: req.user });
+});
+
+app.post("/api/ai/redigir", authRequired, requirePermission("ai:write"), async (req, res) => {
+  const schema = z.object({
+    input: z.string().min(3).max(4000),
+    docContext: z.string().max(3000).optional(),
+    history: z
+      .array(
+        z.object({
+          role: z.enum(["user", "assistant"]),
+          content: z.string().min(1).max(4000),
+        })
+      )
+      .max(12)
+      .optional(),
+  });
+
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Payload inválido", details: parsed.error.flatten() });
+
+  if (!config.anthropicApiKey) {
+    return res.status(503).json({ error: "Integração de IA não configurada no servidor" });
+  }
+
+  const systemPrompt = `Você é um assistente especializado em documentos públicos municipais brasileiros, consórcios intermunicipais e manifestações de interesse. Ajude a redigir, corrigir e melhorar documentos formais com linguagem jurídica e administrativa adequada. Responda sempre em português brasileiro. Conteúdo atual do documento: ${parsed.data.docContext?.slice(0, 1200) || "(nenhum conteúdo ainda)"}`;
+  const history = parsed.data.history || [];
+  const messages = [...history, { role: "user", content: parsed.data.input }];
+
+  const upstream = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": config.anthropicApiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      system: systemPrompt,
+      messages,
+    }),
+  });
+
+  const data = await upstream.json();
+  if (!upstream.ok) {
+    return res.status(502).json({ error: data?.error?.message || "Falha ao consultar provedor de IA" });
+  }
+
+  const text = data.content?.map((block) => block.text || "").join("").trim() || "Sem resposta.";
+  await appendAuditLog({
+    actor: req.user,
+    action: "ai.redigir",
+    resourceType: "ai",
+    payload: { inputChars: parsed.data.input.length, historyCount: history.length },
+  });
+
+  return res.json({ text });
 });
 
 app.get("/api/auth/me", authRequired, async (req, res) => {
@@ -287,7 +387,8 @@ app.put("/api/municipios/snapshot", authRequired, requirePermission("municipios:
 app.get("/api/processos", authRequired, requirePermission("processos:read"), async (req, res) => {
   const db = getDb();
   const { secretaria, status, search } = req.query;
-  const { fromIso, toIso } = parsePeriod(req.query);
+  const { fromIso, toIso, invalid } = parsePeriod(req.query);
+  if (invalid) return res.status(400).json({ error: "Período inválido" });
   const page = Number(req.query.page || 1);
   const pageSize = Math.min(Number(req.query.pageSize || 20), 100);
   const offset = (page - 1) * pageSize;
@@ -497,7 +598,8 @@ app.get("/api/documentos/:id/download", authRequired, requirePermission("documen
 app.get("/api/auditoria", authRequired, requirePermission("auditoria:read"), async (req, res) => {
   const db = getDb();
   const { action, resourceType } = req.query;
-  const { fromIso, toIso } = parsePeriod(req.query);
+  const { fromIso, toIso, invalid } = parsePeriod(req.query);
+  if (invalid) return res.status(400).json({ error: "Período inválido" });
 
   const where = [];
   const params = [];
@@ -537,7 +639,8 @@ app.get("/api/auditoria", authRequired, requirePermission("auditoria:read"), asy
 app.get("/api/dashboard", authRequired, requirePermission("dashboard:read"), async (req, res) => {
   const db = getDb();
   const { secretaria } = req.query;
-  const { fromIso, toIso } = parsePeriod(req.query);
+  const { fromIso, toIso, invalid } = parsePeriod(req.query);
+  if (invalid) return res.status(400).json({ error: "Período inválido" });
 
   const where = [];
   const params = [];
@@ -674,6 +777,12 @@ app.use((err, _req, res, _next) => {
   console.error(err);
   if (err instanceof multer.MulterError) {
     return res.status(400).json({ error: `Erro de upload: ${err.message}` });
+  }
+  if (String(err?.message || "").includes("CORS")) {
+    return res.status(403).json({ error: "Origem não permitida" });
+  }
+  if (err?.statusCode) {
+    return res.status(err.statusCode).json({ error: err.message || "Erro de validação" });
   }
   return res.status(500).json({ error: "Erro interno do servidor" });
 });

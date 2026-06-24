@@ -349,7 +349,6 @@ const LICITACAO_AUTO_FIELDS = [
 const LICITACAO_STORAGE_KEY = "manifestacao.licitacaoForm.v1";
 const MUNICIPIOS_STORAGE_KEY = "manifestacao.municipios.v1";
 const AUDITORIA_STORAGE_KEY = "manifestacao.auditoria.v1";
-const API_TOKEN_STORAGE_KEY = "manifestacao.apiToken.v1";
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:4000";
 
 const EMAIL_INSTITUCIONAL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
@@ -1081,7 +1080,7 @@ function PainelAssinatura({ municipio, onSign, totalMunicipios = 0 }) {
 }
 
 // ─── ASSISTENTE IA ────────────────────────────────────────────────────────────
-function AIAssistant({ docContext }) {
+function AIAssistant({ docContext, apiToken }) {
   const [msgs, setMsgs] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1099,53 +1098,36 @@ function AIAssistant({ docContext }) {
     setLoading(true);
 
     try {
-      // ─── IMPORTANTE ──────────────────────────────────────────────────────
-      // Para rodar localmente, você precisa de uma chave da API Anthropic.
-      // Crie um arquivo .env na raiz do projeto com:
-      //   REACT_APP_ANTHROPIC_API_KEY=sk-ant-...
-      //
-      // Atenção: em produção, nunca exponha a chave no frontend.
-      // Use um backend (Node.js/Express) como proxy para a API.
-      // ─────────────────────────────────────────────────────────────────────
-      const apiKey = process.env.REACT_APP_ANTHROPIC_API_KEY || "";
-
-      if (!apiKey) {
+      if (!apiToken) {
         setMsgs((m) => [
           ...m,
           {
             role: "assistant",
             content:
-              "⚠️ Chave da API não configurada. Crie um arquivo .env na raiz do projeto com REACT_APP_ANTHROPIC_API_KEY=sua-chave. Veja o README para instruções.",
+              "⚠️ Faça login na API para usar o assistente de IA com segurança.",
           },
         ]);
         setLoading(false);
         return;
       }
 
-      const systemPrompt = `Você é um assistente especializado em documentos públicos municipais brasileiros, consórcios intermunicipais e manifestações de interesse. Ajude a redigir, corrigir e melhorar documentos formais com linguagem jurídica e administrativa adequada. Responda sempre em português brasileiro. Conteúdo atual do documento: ${docContext?.slice(0, 800) || "(nenhum conteúdo ainda)"}`;
-
       const history = msgs.map((m) => ({ role: m.role, content: m.content }));
-      history.push({ role: "user", content: userMsg });
-
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch(`${API_BASE_URL}/api/ai/redigir`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
+          "content-type": "application/json",
+          Authorization: `Bearer ${apiToken}`,
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1000,
-          system: systemPrompt,
-          messages: history,
+          input: userMsg,
+          docContext: docContext?.slice(0, 1200) || "",
+          history,
         }),
       });
 
       const data = await res.json();
-      if (data.error) throw new Error(data.error.message);
-      const text = data.content?.map((b) => b.text || "").join("") || "Sem resposta.";
+      if (!res.ok) throw new Error(data.error || "Falha ao consultar IA");
+      const text = data.text || "Sem resposta.";
       setMsgs((m) => [...m, { role: "assistant", content: text }]);
     } catch (err) {
       setMsgs((m) => [
@@ -1276,8 +1258,9 @@ export default function App() {
   const [auditoria, setAuditoria] = useState([]);
   const [apiStatus, setApiStatus] = useState("checking");
   const [apiToken, setApiToken] = useState("");
+  const [apiCsrfToken, setApiCsrfToken] = useState("");
   const [apiUser, setApiUser] = useState(null);
-  const [apiAuth, setApiAuth] = useState({ email: "admin@consorcio.mg.gov.br", password: "Admin@123" });
+  const [apiAuth, setApiAuth] = useState({ email: "admin@consorcio.mg.gov.br", password: "" });
   const [apiDashboard, setApiDashboard] = useState(null);
   const [apiDashboardFilters, setApiDashboardFilters] = useState({ from: "", to: "", secretaria: "" });
   const [apiMunicipiosLoaded, setApiMunicipiosLoaded] = useState(false);
@@ -1548,9 +1531,6 @@ export default function App() {
   );
 
   useEffect(() => {
-    const savedToken = window.localStorage.getItem(API_TOKEN_STORAGE_KEY);
-    if (savedToken) setApiToken(savedToken);
-
     const checkApi = async () => {
       try {
         const res = await fetch(`${API_BASE_URL}/api/health`);
@@ -1573,6 +1553,7 @@ export default function App() {
       try {
         const meRes = await fetch(`${API_BASE_URL}/api/auth/me`, {
           headers: { Authorization: `Bearer ${apiToken}` },
+          credentials: "include",
         });
         const meData = await meRes.json();
         if (!meRes.ok) {
@@ -1584,7 +1565,6 @@ export default function App() {
         await carregarAuditoriaApi(apiToken);
         await carregarProcessosApi(apiToken);
       } catch (err) {
-        window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
         setApiToken("");
         setApiUser(null);
         setApiMunicipiosLoaded(false);
@@ -1627,21 +1607,48 @@ export default function App() {
     return () => clearTimeout(timeoutId);
   }, [apiMunicipiosLoaded, apiToken, municipios, toApiMunicipio]);
 
+  const logoutBackend = async () => {
+    try {
+      await fetch(`${API_BASE_URL}/api/auth/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiToken}` },
+        credentials: "include",
+      });
+    } catch {
+      // Ignorar erro se logout falhar
+    } finally {
+      setApiToken("");
+      setApiUser(null);
+      setApiCsrfToken("");
+      setApiMunicipiosLoaded(false);
+      showToast("🔒 Sessão API desconectada");
+    }
+  };
+
   const loginBackend = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
+      const res = await fetch(`${API_BASE_URL}/api/csrf-token`, {
+        method: "GET",
+      });
+      const csrfData = await res.json();
+      setApiCsrfToken(csrfData.token);
+
+      const res2 = await fetch(`${API_BASE_URL}/api/auth/login`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-csrf-token": csrfData.token,
+        },
+        credentials: "include",
         body: JSON.stringify(apiAuth),
       });
-      const data = await res.json();
-      if (!res.ok) {
+      const data = await res2.json();
+      if (!res2.ok) {
         showToast(`❌ Login API falhou: ${data.error || "erro"}`);
         return;
       }
       setApiToken(data.token);
       setApiUser(data.user);
-      window.localStorage.setItem(API_TOKEN_STORAGE_KEY, data.token);
       await carregarMunicipiosApi(data.token);
       await carregarAuditoriaApi(data.token);
       await carregarProcessosApi(data.token);
@@ -1855,7 +1862,7 @@ export default function App() {
     }
 
     const safeName = (fallbackName || `documento-${documentoId}.bin`).replace(/"/g, "");
-    const cmd = `curl -L -H "Authorization: Bearer ${apiToken}" "${API_BASE_URL}/api/documentos/${documentoId}/download" -o "${safeName}"`;
+    const cmd = `TOKEN="seu_token_aqui" && curl -L -H "Authorization: Bearer $TOKEN" "${API_BASE_URL}/api/documentos/${documentoId}/download" -o "${safeName}"`;
 
     try {
       await navigator.clipboard.writeText(cmd);
@@ -2920,13 +2927,7 @@ export default function App() {
                 </div>
                 <button
                   style={S.btnSm}
-                  onClick={() => {
-                    setApiToken("");
-                    setApiUser(null);
-                    setApiMunicipiosLoaded(false);
-                    window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
-                    showToast("🔒 Sessão API desconectada");
-                  }}
+                  onClick={logoutBackend}
                 >
                   Sair da API
                 </button>
@@ -3419,7 +3420,7 @@ export default function App() {
             />
           </div>
 
-          <AIAssistant docContext={docHtml?.replace(/<[^>]+>/g, "")} />
+          <AIAssistant docContext={docHtml?.replace(/<[^>]+>/g, "")} apiToken={apiToken} />
         </div>
       )}
 

@@ -134,13 +134,20 @@ backend/
 
 ## Configuração da IA (opcional)
 
-Para ativar o assistente de redação com IA, crie o arquivo `.env` na raiz com:
+O assistente de redação usa **proxy no backend** (a chave não fica no browser).
+
+No arquivo `.env` da raiz, configure:
 
 ```env
-REACT_APP_ANTHROPIC_API_KEY=sua_chave_aqui
+REACT_APP_API_BASE_URL=http://localhost:4000
+ANTHROPIC_API_KEY=sua_chave_aqui
+JWT_SECRET=troque-esta-chave-jwt
+AUDIT_SECRET=troque-esta-chave-auditoria
+SEED_ADMIN_PASSWORD=troque-esta-senha-admin
+CORS_ORIGINS=http://localhost:3000
 ```
 
-Sem essa variável, o restante da aplicação continua funcionando normalmente.
+Sem `ANTHROPIC_API_KEY`, o sistema principal continua funcionando normalmente, mas a IA fica indisponível.
 
 ## Estrutura do projeto
 
@@ -164,11 +171,11 @@ manifestacao-municipios/
 
 ## Observação para produção
 
-Para ambiente real, recomenda-se backend para:
+Para ambiente real:
 
-1. Persistir dados de envio e assinatura.
-2. Disparar e-mails transacionais.
-3. Proteger chave de IA via proxy de API.
+1. Nunca use segredos padrão (`JWT_SECRET`, `AUDIT_SECRET`, `SEED_ADMIN_PASSWORD`).
+2. Defina `CORS_ORIGINS` apenas com domínios permitidos.
+3. Configure SMTP para envio real de notificações.
 
 ## Licença
 

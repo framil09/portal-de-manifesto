@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import crypto from "node:crypto";
 import { config } from "./config.js";
 import { getDb } from "./db.js";
 
@@ -32,9 +33,16 @@ export async function login(email, password) {
   };
 }
 
+export function generateCsrfToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
 export function authRequired(req, res, next) {
   const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const cookieToken = req.cookies?.auth_token;
+  const token = bearerToken || cookieToken;
+
   if (!token) return res.status(401).json({ error: "Token ausente" });
 
   try {

@@ -2,6 +2,14 @@ import path from "node:path";
 
 const rootDir = path.resolve(process.cwd(), "backend");
 
+function parseCorsOrigins(value) {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 export const config = {
   port: Number(process.env.API_PORT || 4000),
   jwtSecret: process.env.JWT_SECRET || "change-me-super-secret",
@@ -20,4 +28,42 @@ export const config = {
   smtpUser: process.env.SMTP_USER || "",
   smtpPass: process.env.SMTP_PASS || "",
   smtpFrom: process.env.SMTP_FROM || "nao-responda@consorcio.mg.gov.br",
+  corsOrigins: parseCorsOrigins(process.env.CORS_ORIGINS || process.env.APP_BASE_URL || "http://localhost:3000"),
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY || "",
+  cookieSecret: process.env.COOKIE_SECRET || "change-me-cookie-secret",
+  csrfSecret: process.env.CSRF_SECRET || "change-me-csrf-secret",
+  isProduction: process.env.NODE_ENV === "production",
+  cookieSettings: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 12 * 60 * 60 * 1000,
+  },
 };
+
+function assertSecureConfig() {
+  const isProd = process.env.NODE_ENV === "production";
+  const problems = [];
+
+  if (config.jwtSecret === "change-me-super-secret") {
+    problems.push("JWT_SECRET em valor padrão inseguro");
+  }
+  if (config.auditSecret === "change-me-audit-secret") {
+    problems.push("AUDIT_SECRET em valor padrão inseguro");
+  }
+  if (config.seedAdminPassword === "Admin@123") {
+    problems.push("SEED_ADMIN_PASSWORD em valor padrão inseguro");
+  }
+  if (isProd && config.cookieSecret === "change-me-cookie-secret") {
+    problems.push("COOKIE_SECRET em valor padrão inseguro");
+  }
+  if (isProd && config.csrfSecret === "change-me-csrf-secret") {
+    problems.push("CSRF_SECRET em valor padrão inseguro");
+  }
+
+  if (!isProd || problems.length === 0) return;
+
+  throw new Error(`Configuração insegura para produção: ${problems.join("; ")}`);
+}
+
+assertSecureConfig();
