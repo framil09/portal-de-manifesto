@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { jsPDF } from "jspdf";
+import * as XLSX from "xlsx";
+import QRCode from "qrcode";
 
 // ─── DADOS DOS MUNICÍPIOS ─────────────────────────────────────────────────────
 const MUNICIPIOS_MG = [
@@ -346,6 +348,38 @@ const LICITACAO_AUTO_FIELDS = [
 
 const LICITACAO_STORAGE_KEY = "manifestacao.licitacaoForm.v1";
 const MUNICIPIOS_STORAGE_KEY = "manifestacao.municipios.v1";
+const AUDITORIA_STORAGE_KEY = "manifestacao.auditoria.v1";
+const API_TOKEN_STORAGE_KEY = "manifestacao.apiToken.v1";
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:4000";
+
+const EMAIL_INSTITUCIONAL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+const DOMINIOS_PESSOAIS_BLOQUEADOS = [
+  "gmail.com",
+  "hotmail.com",
+  "outlook.com",
+  "yahoo.com",
+  "yahoo.com.br",
+  "icloud.com",
+  "uol.com.br",
+  "bol.com.br",
+  "live.com",
+];
+
+const ETAPAS_FLUXO = [
+  { id: "rascunho", label: "Rascunho" },
+  { id: "revisao", label: "Revisão jurídica" },
+  { id: "envio", label: "Envio" },
+  { id: "assinaturas", label: "Assinaturas" },
+  { id: "concluido", label: "Concluído" },
+];
+
+const PROCESSO_STATUS_OPTIONS = [
+  { id: "rascunho", label: "Rascunho" },
+  { id: "revisao", label: "Revisão jurídica" },
+  { id: "envio", label: "Envio" },
+  { id: "assinaturas", label: "Assinaturas" },
+  { id: "concluido", label: "Concluído" },
+];
 
 function getInitialLicitacaoFormValues() {
   return LICITACAO_AUTO_FIELDS.reduce((acc, field) => {
@@ -365,6 +399,61 @@ function applyTemplateFieldValues(inputHtml, valuesMap) {
     output = output.replace(regex, value || "");
   });
   return output;
+}
+
+function normalizeMunicipioNome(value) {
+  return (value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isInstitutionalEmail(email) {
+  const normalized = (email || "").toLowerCase().trim();
+  if (!EMAIL_INSTITUCIONAL_RE.test(normalized)) return false;
+  const domain = normalized.split("@")[1] || "";
+  if (DOMINIOS_PESSOAIS_BLOQUEADOS.includes(domain)) return false;
+  return true;
+}
+
+function validateMunicipioData({ nome, email, municipios, editingId = null }) {
+  const errors = { nome: "", email: "" };
+  const normalizedNome = normalizeMunicipioNome(nome);
+  const normalizedEmail = (email || "").trim().toLowerCase();
+  const currentRow = editingId === null ? null : municipios.find((m) => m.id === editingId);
+  const keepingLegacyEmail = currentRow && currentRow.email.toLowerCase() === normalizedEmail;
+
+  if (!normalizedNome) {
+    errors.nome = "Informe o nome do município";
+  } else if (!/^[A-Za-zÀ-ÖØ-öø-ÿ' -]+$/.test(normalizedNome)) {
+    errors.nome = "Use apenas letras, espaços, apóstrofo e hífen";
+  }
+
+  if (!normalizedEmail) {
+    errors.email = "Informe o e-mail institucional";
+  } else if (!isInstitutionalEmail(normalizedEmail) && !keepingLegacyEmail) {
+    errors.email = "Use um e-mail institucional válido (evite provedores pessoais)";
+  }
+
+  const nomeDuplicado = municipios.some(
+    (m) => m.id !== editingId && m.nome.toLowerCase() === normalizedNome.toLowerCase()
+  );
+  if (!errors.nome && nomeDuplicado) {
+    errors.nome = "Esse município já está cadastrado";
+  }
+
+  const emailDuplicado = municipios.some(
+    (m) => m.id !== editingId && m.email.toLowerCase() === normalizedEmail
+  );
+  if (!errors.email && emailDuplicado) {
+    errors.email = "Esse e-mail já está cadastrado";
+  }
+
+  return {
+    errors,
+    normalizedNome,
+    normalizedEmail,
+    ok: !errors.nome && !errors.email,
+  };
 }
 
 const TIMBRADO_HEADER_SRC = "/timbrado/header.png";
@@ -1176,6 +1265,48 @@ export default function App() {
   const [editandoMunicipioId, setEditandoMunicipioId] = useState(null);
   const [edicaoMunicipioNome, setEdicaoMunicipioNome] = useState("");
   const [edicaoMunicipioEmail, setEdicaoMunicipioEmail] = useState("");
+  const [novoMunicipioErrors, setNovoMunicipioErrors] = useState({ nome: "", email: "" });
+  const [edicaoMunicipioErrors, setEdicaoMunicipioErrors] = useState({ nome: "", email: "" });
+  const [selecionados, setSelecionados] = useState([]);
+  const [statusEmMassa, setStatusEmMassa] = useState("enviado");
+  const [importRows, setImportRows] = useState([]);
+  const [importSummary, setImportSummary] = useState(null);
+  const [importFileName, setImportFileName] = useState("");
+  const [etapaFluxo, setEtapaFluxo] = useState("rascunho");
+  const [auditoria, setAuditoria] = useState([]);
+  const [apiStatus, setApiStatus] = useState("checking");
+  const [apiToken, setApiToken] = useState("");
+  const [apiUser, setApiUser] = useState(null);
+  const [apiAuth, setApiAuth] = useState({ email: "admin@consorcio.mg.gov.br", password: "Admin@123" });
+  const [apiDashboard, setApiDashboard] = useState(null);
+  const [apiDashboardFilters, setApiDashboardFilters] = useState({ from: "", to: "", secretaria: "" });
+  const [apiMunicipiosLoaded, setApiMunicipiosLoaded] = useState(false);
+  const [apiSyncing, setApiSyncing] = useState(false);
+  const [apiProcessos, setApiProcessos] = useState([]);
+  const [apiProcessosLoading, setApiProcessosLoading] = useState(false);
+  const [apiProcessosFilters, setApiProcessosFilters] = useState({ search: "", secretaria: "", status: "" });
+  const [apiNovoProcesso, setApiNovoProcesso] = useState({
+    numero: "",
+    secretaria: "",
+    titulo: "",
+    status: "rascunho",
+  });
+  const [apiProcessoSaving, setApiProcessoSaving] = useState(false);
+  const [apiProcessoSelecionadoId, setApiProcessoSelecionadoId] = useState("");
+  const [apiDocumentos, setApiDocumentos] = useState([]);
+  const [apiDocumentoNotes, setApiDocumentoNotes] = useState("");
+  const [apiDocumentoArquivo, setApiDocumentoArquivo] = useState(null);
+  const [apiDocUploading, setApiDocUploading] = useState(false);
+  const [apiSlaLoading, setApiSlaLoading] = useState(false);
+  const [apiSlaFilters, setApiSlaFilters] = useState({ days: "7", secretaria: "" });
+  const [apiSlaData, setApiSlaData] = useState({ total: 0, items: [] });
+  const [apiNotifySending, setApiNotifySending] = useState(false);
+  const [apiNotify, setApiNotify] = useState({
+    to: "",
+    subject: "Alerta de SLA - Processos com atraso",
+    html: "",
+  });
+  const apiDocFileInputRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -1227,6 +1358,26 @@ export default function App() {
 
   useEffect(() => {
     try {
+      const raw = window.localStorage.getItem(AUDITORIA_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      setAuditoria(parsed.slice(0, 300));
+    } catch {
+      // Ignora erro de leitura da trilha de auditoria.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(AUDITORIA_STORAGE_KEY, JSON.stringify(auditoria));
+    } catch {
+      // Ignora erro de persistência da trilha de auditoria.
+    }
+  }, [auditoria]);
+
+  useEffect(() => {
+    try {
       const raw = window.localStorage.getItem(LICITACAO_STORAGE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw);
@@ -1258,6 +1409,603 @@ export default function App() {
     setTimeout(() => setToast(null), dur);
   }, []);
 
+  const registrarAuditoria = useCallback((acao, detalhes) => {
+    const entry = {
+      id: Date.now() + Math.random(),
+      at: new Date().toISOString(),
+      acao,
+      detalhes,
+    };
+    setAuditoria((prev) => [entry, ...prev].slice(0, 300));
+  }, []);
+
+  const toApiMunicipio = useCallback((item) => ({
+    id: Number(item.id),
+    nome: item.nome,
+    email: item.email,
+    token: item.token,
+    activateAt:
+      item.activateAt instanceof Date
+        ? item.activateAt.toISOString()
+        : new Date(item.activateAt || Date.now()).toISOString(),
+    status: item.status,
+    signedAt: item.signedAt || null,
+    geo: item.geo && typeof item.geo === "object"
+      ? { lat: Number(item.geo.lat), lon: Number(item.geo.lon) }
+      : null,
+    hash: item.hash || null,
+  }), []);
+
+  const fromApiMunicipio = useCallback((item, index) => ({
+    id: typeof item.id === "number" ? item.id : index,
+    nome: item.nome || `Município ${index + 1}`,
+    email: item.email || "",
+    token: item.token || gerarToken(item.nome || `municipio-${index}`),
+    activateAt: item.activate_at ? new Date(item.activate_at) : gerarHorario(index),
+    status: item.status === "assinado" || item.status === "enviado" ? item.status : "pendente",
+    signedAt: item.signed_at || null,
+    geo:
+      typeof item.geo_lat === "number" && typeof item.geo_lon === "number"
+        ? { lat: item.geo_lat, lon: item.geo_lon }
+        : null,
+    hash: item.hash || null,
+  }), []);
+
+  const carregarMunicipiosApi = useCallback(
+    async (tokenOverride) => {
+      const token = tokenOverride || apiToken;
+      if (!token) return;
+      const res = await fetch(`${API_BASE_URL}/api/municipios`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Falha ao carregar municípios da API");
+      const items = Array.isArray(data.items) ? data.items : [];
+      const mapped = items.map((item, idx) => fromApiMunicipio(item, idx));
+      if (mapped.length > 0) {
+        setMunicipios(mapped);
+        setSelectedMuni((prev) => mapped.find((m) => m.id === prev?.id) || mapped[0]);
+      }
+      setApiMunicipiosLoaded(true);
+    },
+    [apiToken, fromApiMunicipio]
+  );
+
+  const carregarAuditoriaApi = useCallback(
+    async (tokenOverride) => {
+      const token = tokenOverride || apiToken;
+      if (!token) return;
+      const res = await fetch(`${API_BASE_URL}/api/auditoria`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Falha ao carregar auditoria da API");
+      const rows = (data.items || []).map((row) => ({
+        id: row.id,
+        at: row.ts,
+        acao: row.action,
+        detalhes: `${row.resource_type}${row.signature_valid === false ? " (assinatura inválida)" : ""}`,
+      }));
+      setAuditoria(rows.slice(0, 300));
+    },
+    [apiToken]
+  );
+
+  const carregarProcessosApi = useCallback(
+    async (tokenOverride) => {
+      const token = tokenOverride || apiToken;
+      if (!token) return;
+
+      const qs = new URLSearchParams({ page: "1", pageSize: "50" });
+      if (apiProcessosFilters.search.trim()) qs.set("search", apiProcessosFilters.search.trim());
+      if (apiProcessosFilters.secretaria.trim()) qs.set("secretaria", apiProcessosFilters.secretaria.trim());
+      if (apiProcessosFilters.status) qs.set("status", apiProcessosFilters.status);
+
+      setApiProcessosLoading(true);
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/processos?${qs.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || "Falha ao carregar processos da API");
+        }
+
+        const items = Array.isArray(data.items) ? data.items : [];
+        setApiProcessos(items);
+
+        setApiProcessoSelecionadoId((prev) => {
+          if (!prev) return prev;
+          return items.some((item) => item.id === prev) ? prev : "";
+        });
+      } catch (err) {
+        showToast(`❌ ${String(err.message || err)}`);
+      } finally {
+        setApiProcessosLoading(false);
+      }
+    },
+    [apiProcessosFilters.search, apiProcessosFilters.secretaria, apiProcessosFilters.status, apiToken, showToast]
+  );
+
+  const carregarDocumentosProcessoApi = useCallback(
+    async (processoId, tokenOverride) => {
+      const token = tokenOverride || apiToken;
+      if (!token || !processoId) return;
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/processos/${processoId}/documentos`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || "Falha ao carregar documentos do processo");
+        }
+        setApiDocumentos(Array.isArray(data.items) ? data.items : []);
+      } catch (err) {
+        showToast(`❌ ${String(err.message || err)}`);
+      }
+    },
+    [apiToken, showToast]
+  );
+
+  useEffect(() => {
+    const savedToken = window.localStorage.getItem(API_TOKEN_STORAGE_KEY);
+    if (savedToken) setApiToken(savedToken);
+
+    const checkApi = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/health`);
+        setApiStatus(res.ok ? "online" : "offline");
+      } catch {
+        setApiStatus("offline");
+      }
+    };
+
+    checkApi();
+  }, []);
+
+  useEffect(() => {
+    if (!apiToken) {
+      setApiMunicipiosLoaded(false);
+      return;
+    }
+
+    const loadContext = async () => {
+      try {
+        const meRes = await fetch(`${API_BASE_URL}/api/auth/me`, {
+          headers: { Authorization: `Bearer ${apiToken}` },
+        });
+        const meData = await meRes.json();
+        if (!meRes.ok) {
+          throw new Error(meData.error || "Sessão inválida");
+        }
+        setApiUser(meData.user);
+
+        await carregarMunicipiosApi(apiToken);
+        await carregarAuditoriaApi(apiToken);
+        await carregarProcessosApi(apiToken);
+      } catch (err) {
+        window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+        setApiToken("");
+        setApiUser(null);
+        setApiMunicipiosLoaded(false);
+        showToast(`❌ Sessão API encerrada: ${String(err.message || err)}`);
+      }
+    };
+
+    loadContext();
+  }, [apiToken, carregarAuditoriaApi, carregarMunicipiosApi, carregarProcessosApi, showToast]);
+
+  useEffect(() => {
+    if (!apiToken || !apiProcessoSelecionadoId) {
+      setApiDocumentos([]);
+      return;
+    }
+    carregarDocumentosProcessoApi(apiProcessoSelecionadoId);
+  }, [apiToken, apiProcessoSelecionadoId, carregarDocumentosProcessoApi]);
+
+  useEffect(() => {
+    if (!apiToken || !apiMunicipiosLoaded) return;
+
+    const timeoutId = setTimeout(async () => {
+      try {
+        setApiSyncing(true);
+        await fetch(`${API_BASE_URL}/api/municipios/snapshot`, {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${apiToken}`,
+          },
+          body: JSON.stringify({ items: municipios.map(toApiMunicipio) }),
+        });
+      } catch {
+        // Mantém fluxo local caso API esteja indisponível momentaneamente.
+      } finally {
+        setApiSyncing(false);
+      }
+    }, 450);
+
+    return () => clearTimeout(timeoutId);
+  }, [apiMunicipiosLoaded, apiToken, municipios, toApiMunicipio]);
+
+  const loginBackend = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(apiAuth),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(`❌ Login API falhou: ${data.error || "erro"}`);
+        return;
+      }
+      setApiToken(data.token);
+      setApiUser(data.user);
+      window.localStorage.setItem(API_TOKEN_STORAGE_KEY, data.token);
+      await carregarMunicipiosApi(data.token);
+      await carregarAuditoriaApi(data.token);
+      await carregarProcessosApi(data.token);
+      showToast(`✅ API conectada como ${data.user?.nome || data.user?.email}`);
+    } catch {
+      showToast("❌ Não foi possível conectar na API");
+    }
+  };
+
+  const criarProcessoApi = async () => {
+    if (!apiToken) {
+      showToast("⚠️ Faça login na API para criar processos");
+      return;
+    }
+
+    const numero = apiNovoProcesso.numero.trim();
+    const secretaria = apiNovoProcesso.secretaria.trim();
+    const titulo = apiNovoProcesso.titulo.trim();
+
+    if (!numero || !secretaria || !titulo) {
+      showToast("⚠️ Preencha número, secretaria e título");
+      return;
+    }
+
+    setApiProcessoSaving(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/processos`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${apiToken}`,
+        },
+        body: JSON.stringify({
+          numero,
+          secretaria,
+          titulo,
+          status: apiNovoProcesso.status,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(`❌ Falha ao criar processo: ${data.error || "erro"}`);
+        return;
+      }
+
+      setApiNovoProcesso({ numero: "", secretaria: "", titulo: "", status: apiNovoProcesso.status });
+      setApiProcessoSelecionadoId(data.id || "");
+      await carregarProcessosApi();
+      await carregarDashboardApi();
+      showToast("✅ Processo criado na API");
+    } catch {
+      showToast("❌ Erro ao criar processo na API");
+    } finally {
+      setApiProcessoSaving(false);
+    }
+  };
+
+  const atualizarStatusProcessoApi = async (processoId, status) => {
+    if (!apiToken || !processoId || !status) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/processos/${processoId}`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${apiToken}`,
+        },
+        body: JSON.stringify({ status }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(`❌ Falha ao atualizar status: ${data.error || "erro"}`);
+        return;
+      }
+
+      setApiProcessos((prev) => prev.map((item) => (item.id === processoId ? { ...item, status } : item)));
+      setEtapaFluxo(status);
+      await carregarDashboardApi();
+      showToast("✅ Status do processo atualizado");
+    } catch {
+      showToast("❌ Erro ao atualizar status do processo");
+    }
+  };
+
+  const sincronizarEtapaFluxoNoProcessoApi = async () => {
+    if (!apiToken) {
+      showToast("⚠️ Faça login na API para sincronizar workflow");
+      return;
+    }
+    if (!apiProcessoSelecionadoId) {
+      showToast("⚠️ Selecione um processo da API");
+      return;
+    }
+    await atualizarStatusProcessoApi(apiProcessoSelecionadoId, etapaFluxo);
+  };
+
+  const enviarDocumentoProcessoApi = async () => {
+    if (!apiToken) {
+      showToast("⚠️ Faça login na API para enviar documentos");
+      return;
+    }
+    if (!apiProcessoSelecionadoId) {
+      showToast("⚠️ Selecione um processo antes do upload");
+      return;
+    }
+    if (!apiDocumentoArquivo) {
+      showToast("⚠️ Selecione um arquivo para upload");
+      return;
+    }
+
+    const form = new FormData();
+    form.append("arquivo", apiDocumentoArquivo);
+    if (apiDocumentoNotes.trim()) {
+      form.append("notes", apiDocumentoNotes.trim());
+    }
+
+    setApiDocUploading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/processos/${apiProcessoSelecionadoId}/documentos`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiToken}` },
+        body: form,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(`❌ Falha no upload: ${data.error || "erro"}`);
+        return;
+      }
+
+      setApiDocumentoArquivo(null);
+      setApiDocumentoNotes("");
+      if (apiDocFileInputRef.current) {
+        apiDocFileInputRef.current.value = "";
+      }
+      await carregarDocumentosProcessoApi(apiProcessoSelecionadoId);
+      await carregarProcessosApi();
+      await carregarDashboardApi();
+      showToast("✅ Documento enviado com nova versão");
+    } catch {
+      showToast("❌ Erro ao enviar documento");
+    } finally {
+      setApiDocUploading(false);
+    }
+  };
+
+  const baixarDocumentoProcessoApi = async (documentoId, fallbackName, openInNewTab = false) => {
+    if (!apiToken) {
+      showToast("⚠️ Faça login na API para baixar documentos");
+      return;
+    }
+    if (!documentoId) {
+      showToast("⚠️ Documento inválido para download");
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/documentos/${documentoId}/download`, {
+        headers: { Authorization: `Bearer ${apiToken}` },
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        let errorMsg = "Erro ao baixar documento";
+        try {
+          const json = JSON.parse(text);
+          errorMsg = json.error || errorMsg;
+        } catch {
+          // Mantém mensagem padrão caso retorno não seja JSON.
+        }
+        showToast(`❌ ${errorMsg}`);
+        return;
+      }
+
+      const blob = await res.blob();
+      const headerName = res.headers.get("content-disposition") || "";
+      const match = headerName.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+      const extracted = decodeURIComponent(match?.[1] || match?.[2] || "");
+      const fileName = extracted || fallbackName || `documento-${documentoId}.bin`;
+
+      const url = URL.createObjectURL(blob);
+
+      if (openInNewTab) {
+        const newTab = window.open(url, "_blank", "noopener,noreferrer");
+        if (newTab) {
+          showToast(`👁️ Visualização aberta: ${fileName}`);
+          return;
+        }
+      }
+
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+      showToast(`📥 Download concluído: ${fileName}`);
+    } catch {
+      showToast("❌ Falha de rede ao baixar documento");
+    }
+  };
+
+  const copiarComandoDownloadDocumentoApi = async (documentoId, fallbackName) => {
+    if (!apiToken) {
+      showToast("⚠️ Faça login na API para copiar comando autenticado");
+      return;
+    }
+    if (!documentoId) {
+      showToast("⚠️ Documento inválido para copiar comando");
+      return;
+    }
+
+    const safeName = (fallbackName || `documento-${documentoId}.bin`).replace(/"/g, "");
+    const cmd = `curl -L -H "Authorization: Bearer ${apiToken}" "${API_BASE_URL}/api/documentos/${documentoId}/download" -o "${safeName}"`;
+
+    try {
+      await navigator.clipboard.writeText(cmd);
+      showToast("📋 Comando cURL copiado");
+    } catch {
+      showToast("❌ Não foi possível copiar para a área de transferência");
+    }
+  };
+
+  const copiarLinkDocumentoApi = async (documentoId) => {
+    if (!documentoId) {
+      showToast("⚠️ Documento inválido para copiar link");
+      return;
+    }
+
+    const endpoint = `${API_BASE_URL}/api/documentos/${documentoId}/download`;
+    try {
+      await navigator.clipboard.writeText(endpoint);
+      showToast("🔗 Link da API copiado (sem token)");
+    } catch {
+      showToast("❌ Não foi possível copiar o link da API");
+    }
+  };
+
+  const carregarAlertasSlaApi = async () => {
+    if (!apiToken) {
+      showToast("⚠️ Faça login na API para consultar alertas SLA");
+      return;
+    }
+
+    const days = Math.max(1, Number(apiSlaFilters.days) || 7);
+    const qs = new URLSearchParams({ days: String(days) });
+    if (apiSlaFilters.secretaria.trim()) {
+      qs.set("secretaria", apiSlaFilters.secretaria.trim());
+    }
+
+    setApiSlaLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/alerts/sla?${qs.toString()}`, {
+        headers: { Authorization: `Bearer ${apiToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(`❌ Falha ao carregar SLA: ${data.error || "erro"}`);
+        return;
+      }
+
+      const items = Array.isArray(data.items) ? data.items : [];
+      setApiSlaData({ total: data.total || items.length, items });
+
+      const htmlResumo = items.length
+        ? `<p>Foram identificados <strong>${items.length}</strong> processo(s) em atraso de SLA (>${days} dia(s)).</p><ul>${items
+            .slice(0, 20)
+            .map((item) => `<li>${item.numero} - ${item.secretaria} - ${item.titulo}</li>`)
+            .join("")}</ul>`
+        : `<p>Sem processos em atraso de SLA para o filtro atual (>${days} dia(s)).</p>`;
+
+      setApiNotify((prev) => ({
+        ...prev,
+        html: htmlResumo,
+      }));
+
+      showToast(`📌 SLA carregado: ${items.length} item(ns)`);
+    } catch {
+      showToast("❌ Erro ao consultar alertas SLA");
+    } finally {
+      setApiSlaLoading(false);
+    }
+  };
+
+  const enviarNotificacaoSlaApi = async () => {
+    if (!apiToken) {
+      showToast("⚠️ Faça login na API para enviar notificações");
+      return;
+    }
+
+    const to = apiNotify.to.trim().toLowerCase();
+    const subject = apiNotify.subject.trim();
+    const html = apiNotify.html.trim();
+
+    if (!to || !EMAIL_INSTITUCIONAL_RE.test(to)) {
+      showToast("⚠️ Informe um e-mail válido para envio");
+      return;
+    }
+    if (!subject || subject.length < 5) {
+      showToast("⚠️ Informe um assunto com ao menos 5 caracteres");
+      return;
+    }
+    if (!html || html.length < 5) {
+      showToast("⚠️ Informe o conteúdo HTML da notificação");
+      return;
+    }
+
+    setApiNotifySending(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/alerts/notify`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${apiToken}`,
+        },
+        body: JSON.stringify({ to, subject, html }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(`❌ Falha ao enviar notificação: ${data.error || "erro"}`);
+        return;
+      }
+
+      if (data.sent) {
+        showToast("✅ Notificação enviada com sucesso");
+      } else {
+        showToast(`ℹ️ Notificação registrada sem envio SMTP (${data.reason || "smtp não configurado"})`);
+      }
+
+      await carregarAuditoriaApi();
+    } catch {
+      showToast("❌ Erro ao enviar notificação");
+    } finally {
+      setApiNotifySending(false);
+    }
+  };
+
+  const carregarDashboardApi = async () => {
+    if (!apiToken) {
+      showToast("⚠️ Faça login na API para carregar o dashboard avançado");
+      return;
+    }
+
+    const qs = new URLSearchParams();
+    if (apiDashboardFilters.from) qs.set("from", apiDashboardFilters.from);
+    if (apiDashboardFilters.to) qs.set("to", apiDashboardFilters.to);
+    if (apiDashboardFilters.secretaria) qs.set("secretaria", apiDashboardFilters.secretaria);
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/dashboard?${qs.toString()}`, {
+        headers: { Authorization: `Bearer ${apiToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(`❌ Falha no dashboard da API: ${data.error || "erro"}`);
+        return;
+      }
+      setApiDashboard(data);
+      showToast("📊 Dashboard da API atualizado");
+    } catch {
+      showToast("❌ Erro ao consultar dashboard da API");
+    }
+  };
+
   const stats = {
     enviados: municipios.filter((m) => m.status !== "pendente").length,
     assinados: municipios.filter((m) => m.status === "assinado").length,
@@ -1266,40 +2014,33 @@ export default function App() {
 
   const totalMunicipios = municipios.length;
   const pct = totalMunicipios === 0 ? 0 : Math.round((stats.assinados / totalMunicipios) * 100);
+  const idxEtapaFluxo = ETAPAS_FLUXO.findIndex((etapa) => etapa.id === etapaFluxo);
+  const podeEnviarLinks = ["envio", "assinaturas", "concluido"].includes(etapaFluxo);
+
+  useEffect(() => {
+    if (totalMunicipios > 0 && stats.assinados === totalMunicipios && etapaFluxo !== "concluido") {
+      setEtapaFluxo("concluido");
+    }
+  }, [stats.assinados, totalMunicipios, etapaFluxo]);
 
   const cadastrarMunicipio = () => {
-    const nome = novoMunicipioNome.trim();
-    const email = novoMunicipioEmail.trim().toLowerCase();
-
-    if (!nome || !email) {
-      showToast("⚠️ Informe nome do município e e-mail");
-      return;
-    }
-
-    const emailValido = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-    if (!emailValido) {
-      showToast("⚠️ Informe um e-mail válido");
-      return;
-    }
-
-    const nomeDuplicado = municipios.some((m) => m.nome.toLowerCase() === nome.toLowerCase());
-    if (nomeDuplicado) {
-      showToast("⚠️ Esse município já está cadastrado");
-      return;
-    }
-
-    const emailDuplicado = municipios.some((m) => m.email.toLowerCase() === email);
-    if (emailDuplicado) {
-      showToast("⚠️ Esse e-mail já está cadastrado");
+    const validation = validateMunicipioData({
+      nome: novoMunicipioNome,
+      email: novoMunicipioEmail,
+      municipios,
+    });
+    setNovoMunicipioErrors(validation.errors);
+    if (!validation.ok) {
+      showToast("⚠️ Corrija os campos destacados");
       return;
     }
 
     const novoId = municipios.length ? Math.max(...municipios.map((m) => m.id)) + 1 : 0;
     const novo = {
       id: novoId,
-      nome,
-      email,
-      token: gerarToken(nome),
+      nome: validation.normalizedNome,
+      email: validation.normalizedEmail,
+      token: gerarToken(validation.normalizedNome),
       activateAt: gerarHorario(municipios.length),
       status: "pendente",
       signedAt: null,
@@ -1310,65 +2051,52 @@ export default function App() {
     setMunicipios((prev) => [...prev, novo]);
     setNovoMunicipioNome("");
     setNovoMunicipioEmail("");
-    showToast(`✅ Município cadastrado: ${nome}`);
+    setNovoMunicipioErrors({ nome: "", email: "" });
+    registrarAuditoria("municipio.cadastrado", `${validation.normalizedNome} <${validation.normalizedEmail}>`);
+    showToast(`✅ Município cadastrado: ${validation.normalizedNome}`);
   };
 
   const iniciarEdicaoMunicipio = (muni) => {
     setEditandoMunicipioId(muni.id);
     setEdicaoMunicipioNome(muni.nome);
     setEdicaoMunicipioEmail(muni.email);
+    setEdicaoMunicipioErrors({ nome: "", email: "" });
   };
 
   const cancelarEdicaoMunicipio = () => {
     setEditandoMunicipioId(null);
     setEdicaoMunicipioNome("");
     setEdicaoMunicipioEmail("");
+    setEdicaoMunicipioErrors({ nome: "", email: "" });
   };
 
   const salvarEdicaoMunicipio = () => {
     if (editandoMunicipioId === null) return;
 
-    const nome = edicaoMunicipioNome.trim();
-    const email = edicaoMunicipioEmail.trim().toLowerCase();
-
-    if (!nome || !email) {
-      showToast("⚠️ Informe nome do município e e-mail");
-      return;
-    }
-
-    const emailValido = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-    if (!emailValido) {
-      showToast("⚠️ Informe um e-mail válido");
-      return;
-    }
-
-    const nomeDuplicado = municipios.some(
-      (m) => m.id !== editandoMunicipioId && m.nome.toLowerCase() === nome.toLowerCase()
-    );
-    if (nomeDuplicado) {
-      showToast("⚠️ Esse município já está cadastrado");
-      return;
-    }
-
-    const emailDuplicado = municipios.some(
-      (m) => m.id !== editandoMunicipioId && m.email.toLowerCase() === email
-    );
-    if (emailDuplicado) {
-      showToast("⚠️ Esse e-mail já está cadastrado");
+    const validation = validateMunicipioData({
+      nome: edicaoMunicipioNome,
+      email: edicaoMunicipioEmail,
+      municipios,
+      editingId: editandoMunicipioId,
+    });
+    setEdicaoMunicipioErrors(validation.errors);
+    if (!validation.ok) {
+      showToast("⚠️ Corrija os campos destacados");
       return;
     }
 
     setMunicipios((prev) =>
-      prev.map((m) => (m.id === editandoMunicipioId ? { ...m, nome, email } : m))
+      prev.map((m) => (m.id === editandoMunicipioId ? { ...m, nome: validation.normalizedNome, email: validation.normalizedEmail } : m))
     );
 
     if (selectedMuni?.id === editandoMunicipioId) {
-      setSelectedMuni((prev) => (prev ? { ...prev, nome, email } : prev));
+      setSelectedMuni((prev) => (prev ? { ...prev, nome: validation.normalizedNome, email: validation.normalizedEmail } : prev));
     }
     if (contratoSelecionado?.id === editandoMunicipioId) {
-      setContratoSelecionado((prev) => (prev ? { ...prev, nome, email } : prev));
+      setContratoSelecionado((prev) => (prev ? { ...prev, nome: validation.normalizedNome, email: validation.normalizedEmail } : prev));
     }
 
+    registrarAuditoria("municipio.editado", `${validation.normalizedNome} <${validation.normalizedEmail}>`);
     cancelarEdicaoMunicipio();
     showToast("✅ Município atualizado");
   };
@@ -1400,22 +2128,265 @@ export default function App() {
       cancelarEdicaoMunicipio();
     }
 
+    registrarAuditoria("municipio.excluido", muni.nome);
     showToast(`🗑️ Município removido: ${muni.nome}`);
   };
 
+  const filtered = municipios.filter((m) =>
+    m.nome.toLowerCase().includes(search.toLowerCase())
+  );
+  const allFilteredSelected =
+    filtered.length > 0 && filtered.every((m) => selecionados.includes(m.id));
+
+  useEffect(() => {
+    setSelecionados((prev) => prev.filter((id) => municipios.some((m) => m.id === id)));
+  }, [municipios]);
+
+  const toggleSelecionado = (id) => {
+    setSelecionados((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelecionarTodosFiltrados = () => {
+    const idsFiltrados = filtered.map((m) => m.id);
+    const todosSelecionados = idsFiltrados.length > 0 && idsFiltrados.every((id) => selecionados.includes(id));
+    if (todosSelecionados) {
+      setSelecionados((prev) => prev.filter((id) => !idsFiltrados.includes(id)));
+    } else {
+      setSelecionados((prev) => [...new Set([...prev, ...idsFiltrados])]);
+    }
+  };
+
+  const limparSelecao = () => setSelecionados([]);
+
+  const aplicarStatusEmMassa = () => {
+    if (selecionados.length === 0) {
+      showToast("⚠️ Selecione ao menos um município");
+      return;
+    }
+    setMunicipios((prev) =>
+      prev.map((m) => {
+        if (!selecionados.includes(m.id)) return m;
+        if (statusEmMassa === "assinado" && !m.hash) return m;
+        return { ...m, status: statusEmMassa };
+      })
+    );
+    registrarAuditoria("municipio.status.massa", `${selecionados.length} município(s) -> ${statusEmMassa}`);
+    showToast(`✅ Status aplicado em ${selecionados.length} município(s)`);
+  };
+
+  const excluirSelecionados = () => {
+    if (selecionados.length === 0) {
+      showToast("⚠️ Selecione ao menos um município");
+      return;
+    }
+    if (selecionados.length >= municipios.length) {
+      showToast("⚠️ Mantenha ao menos 1 município na base");
+      return;
+    }
+    const confirmed = window.confirm(`Excluir ${selecionados.length} município(s) selecionado(s)?`);
+    if (!confirmed) return;
+
+    const removidos = municipios.filter((m) => selecionados.includes(m.id));
+    const restantes = municipios.filter((m) => !selecionados.includes(m.id));
+    setMunicipios(restantes);
+    setSigns((prev) => {
+      const next = { ...prev };
+      removidos.forEach((m) => delete next[m.id]);
+      return next;
+    });
+    if (selectedMuni && selecionados.includes(selectedMuni.id)) {
+      setSelectedMuni(restantes[0] || null);
+    }
+    if (contratoSelecionado && selecionados.includes(contratoSelecionado.id)) {
+      setContratoSelecionado(null);
+    }
+    setSelecionados([]);
+    registrarAuditoria("municipio.exclusao.massa", `${removidos.length} município(s)`);
+    showToast(`🗑️ ${removidos.length} município(s) removido(s)`);
+  };
+
+  const enviarSelecionados = () => {
+    if (!podeEnviarLinks) {
+      showToast("⚠️ Avance o fluxo para a etapa de Envio antes de disparar links");
+      return;
+    }
+    if (selecionados.length === 0) {
+      showToast("⚠️ Selecione ao menos um município");
+      return;
+    }
+    setMunicipios((prev) =>
+      prev.map((m) => (selecionados.includes(m.id) ? { ...m, status: "enviado" } : m))
+    );
+    registrarAuditoria("envio.massa", `${selecionados.length} município(s)`);
+    showToast(`📨 ${selecionados.length} link(s) enviados`);
+  };
+
+  const processarArquivoImportacao = async (evt) => {
+    const file = evt.target.files?.[0];
+    if (!file) return;
+    setImportFileName(file.name);
+
+    try {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+
+      if (!rows.length) {
+        setImportRows([]);
+        setImportSummary(null);
+        showToast("⚠️ O arquivo está vazio");
+        return;
+      }
+
+      const firstRow = (rows[0] || []).map((cell) => String(cell).toLowerCase().trim());
+      const hasHeader = firstRow.some((c) => c.includes("nome") || c.includes("email") || c.includes("e-mail"));
+      const dataRows = hasHeader ? rows.slice(1) : rows;
+
+      const nomeSet = new Set(municipios.map((m) => m.nome.toLowerCase()));
+      const emailSet = new Set(municipios.map((m) => m.email.toLowerCase()));
+      const inBatchNomeSet = new Set();
+      const inBatchEmailSet = new Set();
+
+      const parsed = dataRows
+        .map((row, idx) => {
+          const rawNome = String(row[0] || "");
+          const rawEmail = String(row[1] || "");
+          if (!rawNome.trim() && !rawEmail.trim()) return null;
+
+          const validation = validateMunicipioData({
+            nome: rawNome,
+            email: rawEmail,
+            municipios,
+          });
+          const issues = [];
+          if (validation.errors.nome) issues.push(validation.errors.nome);
+          if (validation.errors.email) issues.push(validation.errors.email);
+
+          const lowerNome = validation.normalizedNome.toLowerCase();
+          const lowerEmail = validation.normalizedEmail;
+          if (!issues.length && (nomeSet.has(lowerNome) || inBatchNomeSet.has(lowerNome))) {
+            issues.push("Município duplicado no sistema/arquivo");
+          }
+          if (!issues.length && (emailSet.has(lowerEmail) || inBatchEmailSet.has(lowerEmail))) {
+            issues.push("E-mail duplicado no sistema/arquivo");
+          }
+
+          if (!issues.length) {
+            inBatchNomeSet.add(lowerNome);
+            inBatchEmailSet.add(lowerEmail);
+          }
+
+          return {
+            rowIndex: idx + (hasHeader ? 2 : 1),
+            nome: validation.normalizedNome,
+            email: validation.normalizedEmail,
+            issues,
+            valid: issues.length === 0,
+          };
+        })
+        .filter(Boolean);
+
+      const validCount = parsed.filter((r) => r.valid).length;
+      const invalidCount = parsed.length - validCount;
+      setImportRows(parsed);
+      setImportSummary({ total: parsed.length, valid: validCount, invalid: invalidCount });
+      showToast(`📥 Arquivo lido: ${validCount} válido(s), ${invalidCount} inválido(s)`);
+    } catch (err) {
+      setImportRows([]);
+      setImportSummary(null);
+      showToast("❌ Falha ao processar arquivo de importação");
+      // eslint-disable-next-line no-console
+      console.error(err);
+    } finally {
+      evt.target.value = "";
+    }
+  };
+
+  const confirmarImportacao = () => {
+    const validRows = importRows.filter((r) => r.valid);
+    if (validRows.length === 0) {
+      showToast("⚠️ Nenhum registro válido para importar");
+      return;
+    }
+
+    const maxId = municipios.length ? Math.max(...municipios.map((m) => m.id)) : -1;
+    const novos = validRows.map((r, idx) => ({
+      id: maxId + idx + 1,
+      nome: r.nome,
+      email: r.email,
+      token: gerarToken(r.nome),
+      activateAt: gerarHorario(municipios.length + idx),
+      status: "pendente",
+      signedAt: null,
+      geo: null,
+      hash: null,
+    }));
+
+    setMunicipios((prev) => [...prev, ...novos]);
+    setImportRows([]);
+    setImportSummary(null);
+    setImportFileName("");
+    registrarAuditoria("municipio.importacao", `${novos.length} município(s) via arquivo`);
+    showToast(`✅ ${novos.length} município(s) importado(s)`);
+  };
+
+  const mudarEtapaFluxo = (nextId) => {
+    const etapa = ETAPAS_FLUXO.find((item) => item.id === nextId);
+    if (!etapa) return;
+    setEtapaFluxo(nextId);
+    registrarAuditoria("fluxo.etapa", etapa.label);
+    showToast(`📌 Etapa atual: ${etapa.label}`);
+  };
+
+  const exportarRelatorioCsv = () => {
+    const header = ["Municipio", "Email", "Status", "AssinadoEm", "Hash"];
+    const lines = municipios.map((m) => [
+      m.nome,
+      m.email,
+      m.status,
+      m.signedAt ? new Date(m.signedAt).toLocaleString("pt-BR") : "",
+      m.hash || "",
+    ]);
+    const csv = [header, ...lines]
+      .map((row) => row.map((col) => `"${String(col || "").replace(/"/g, '""')}"`).join(";"))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `relatorio-municipios-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    registrarAuditoria("relatorio.exportado", "CSV de municípios");
+  };
+
   const enviarUm = (id) => {
+    if (!podeEnviarLinks) {
+      showToast("⚠️ Avance o fluxo para a etapa de Envio antes de disparar links");
+      return;
+    }
     setMunicipios((prev) =>
       prev.map((m) => (m.id === id ? { ...m, status: "enviado" } : m))
     );
-    showToast(`📨 Enviado para ${municipios.find((m) => m.id === id)?.nome}`);
+    const nome = municipios.find((m) => m.id === id)?.nome;
+    registrarAuditoria("envio.individual", nome || `ID ${id}`);
+    showToast(`📨 Enviado para ${nome}`);
   };
 
   const enviarTodos = () => {
+    if (!podeEnviarLinks) {
+      showToast("⚠️ Avance o fluxo para a etapa de Envio antes de disparar links");
+      return;
+    }
     setModal(null);
     let i = 0;
     const interval = setInterval(() => {
       if (i >= municipios.length) {
         clearInterval(interval);
+        registrarAuditoria("envio.total", `${municipios.length} município(s)`);
         showToast("✅ Todos os links foram enviados!");
         return;
       }
@@ -1440,19 +2411,21 @@ export default function App() {
           : m
       )
     );
+    if (["rascunho", "revisao", "envio"].includes(etapaFluxo)) {
+      setEtapaFluxo("assinaturas");
+    }
     setSigns((prev) => ({ ...prev, [muniId]: sigData }));
-    showToast(`✅ ${municipios.find((m) => m.id === muniId)?.nome} assinou!`);
+    const nome = municipios.find((m) => m.id === muniId)?.nome;
+    registrarAuditoria("assinatura.realizada", nome || `ID ${muniId}`);
+    showToast(`✅ ${nome} assinou!`);
   };
 
   const copyLink = (muni) => {
     const url = `https://manifestacao.seudominio.com.br/assinar/${muni.token}`;
     navigator.clipboard?.writeText(url);
+    registrarAuditoria("link.copiado", muni.nome);
     showToast(`🔗 Link copiado: ${muni.nome}`);
   };
-
-  const filtered = municipios.filter((m) =>
-    m.nome.toLowerCase().includes(search.toLowerCase())
-  );
 
   const abrirModalCamposLicitacao = () => {
     if (!docHtml?.trim()) {
@@ -1536,6 +2509,7 @@ export default function App() {
       const headerH = (headerW * 309) / 2319;
       const footerW = pageW - marginX * 2;
       const footerH = (footerW * 292) / 2319;
+      const summaryEntries = [];
 
       const addTimbrado = () => {
         pdf.addImage(headerDataUrl, "PNG", marginX, 18, headerW, headerH);
@@ -1563,9 +2537,33 @@ export default function App() {
 
       const documentoTexto = htmlToPlainText(docHtml) || "Documento sem conteúdo no editor.";
 
-      assinados.forEach((m, index) => {
-        if (index > 0) pdf.addPage();
+      addTimbrado();
+      let coverY = headerH + 68;
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(20);
+      pdf.text("Relatório de Assinaturas Municipais", marginX, coverY);
+      coverY += 28;
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(12);
+      pdf.text(`Gerado em: ${new Date().toLocaleString("pt-BR")}`, marginX, coverY);
+      coverY += 18;
+      pdf.text(`Total de municípios assinados: ${assinados.length}`, marginX, coverY);
+      coverY += 28;
+      pdf.setFont("times", "normal");
+      pdf.setFontSize(11);
+      const coverIntro = pdf.splitTextToSize(
+        "Este relatório consolida as assinaturas eletrônicas recebidas, incluindo evidências de data/hora, geolocalização, hash de validação e QR Code para conferência.",
+        pageW - marginX * 2
+      );
+      coverIntro.forEach((line) => {
+        pdf.text(line, marginX, coverY);
+        coverY += 15;
+      });
+
+      for (const m of assinados) {
+        pdf.addPage();
         addTimbrado();
+        summaryEntries.push({ municipio: m.nome, page: pdf.getNumberOfPages() });
 
         let y = headerH + 54;
         pdf.setFont("helvetica", "bold");
@@ -1607,10 +2605,45 @@ export default function App() {
         pdf.setFont("helvetica", "normal");
         pdf.setTextColor(40, 40, 40);
         pdf.text("Registro com data, hora, geolocalização e hash de validação.", marginX + 10, y + 39);
+
+        const qrText = `https://manifestacao.seudominio.com.br/validar?hash=${encodeURIComponent(m.hash || "")}`;
+        const qrDataUrl = await QRCode.toDataURL(qrText, { margin: 1, width: 96 });
+        pdf.addImage(qrDataUrl, "PNG", pageW - marginX - 90, y + 7, 64, 64);
+        pdf.setFontSize(8);
+        pdf.text("QR validação", pageW - marginX - 84, y + 76);
+      }
+
+      pdf.addPage();
+      addTimbrado();
+      let sumY = headerH + 54;
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(14);
+      pdf.text("Sumário de Assinaturas", marginX, sumY);
+      sumY += 24;
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(11);
+      summaryEntries.forEach((entry, idx) => {
+        if (sumY > pageH - footerH - 36) {
+          pdf.addPage();
+          addTimbrado();
+          sumY = headerH + 56;
+        }
+        pdf.text(`${idx + 1}. ${entry.municipio} — página ${entry.page}`, marginX, sumY);
+        sumY += 15;
       });
+
+      const totalPages = pdf.getNumberOfPages();
+      for (let i = 1; i <= totalPages; i++) {
+        pdf.setPage(i);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(9);
+        pdf.setTextColor(120, 120, 120);
+        pdf.text(`Página ${i} de ${totalPages}`, pageW - marginX - 60, pageH - footerH - 26);
+      }
 
       const dateStamp = new Date().toISOString().slice(0, 10);
       pdf.save(`assinaturas-municipios-${dateStamp}.pdf`);
+      registrarAuditoria("pdf.lote.gerado", `${assinados.length} assinatura(s)`);
       showToast("✅ PDF gerado com sucesso");
     } catch (err) {
       showToast("❌ Falha ao gerar PDF");
@@ -1682,6 +2715,13 @@ export default function App() {
       pdf.text("Conteúdo do documento:", marginX, y);
       y += 16;
 
+      const qrText = `https://manifestacao.seudominio.com.br/validar?hash=${encodeURIComponent(muni.hash || "")}`;
+      const qrDataUrl = await QRCode.toDataURL(qrText, { margin: 1, width: 88 });
+      pdf.addImage(qrDataUrl, "PNG", pageW - marginX - 84, headerH + 42, 58, 58);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(8);
+      pdf.text("QR validação", pageW - marginX - 78, headerH + 108);
+
       const documentoTexto = htmlToPlainText(docHtml) || "Documento sem conteúdo no editor.";
       const linhas = pdf.splitTextToSize(documentoTexto, pageW - marginX * 2);
       pdf.setFont("times", "normal");
@@ -1697,8 +2737,18 @@ export default function App() {
         y += 15;
       });
 
+      const totalPages = pdf.getNumberOfPages();
+      for (let i = 1; i <= totalPages; i++) {
+        pdf.setPage(i);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(9);
+        pdf.setTextColor(120, 120, 120);
+        pdf.text(`Página ${i} de ${totalPages}`, pageW - marginX - 60, pageH - footerH - 26);
+      }
+
       const stamp = new Date().toISOString().slice(0, 10);
       pdf.save(`contrato-assinado-${muni.nome.toLowerCase().replace(/\s+/g, "-")}-${stamp}.pdf`);
+      registrarAuditoria("pdf.individual.gerado", muni.nome);
       showToast(`✅ PDF do contrato gerado: ${muni.nome}`);
     } catch (err) {
       showToast("❌ Falha ao exportar contrato");
@@ -1709,7 +2759,24 @@ export default function App() {
     }
   };
 
+  const now = new Date();
+  const atrasados = municipios.filter(
+    (m) => m.status === "pendente" && m.activateAt instanceof Date && m.activateAt < now
+  ).length;
+  const taxaAssinatura = totalMunicipios === 0 ? 0 : Math.round((stats.assinados / totalMunicipios) * 100);
+  const assinaturasPorDia = municipios
+    .filter((m) => m.signedAt)
+    .reduce((acc, m) => {
+      const key = new Date(m.signedAt).toLocaleDateString("pt-BR");
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+  const serieAssinaturas = Object.entries(assinaturasPorDia)
+    .sort((a, b) => new Date(a[0].split("/").reverse().join("-")).getTime() - new Date(b[0].split("/").reverse().join("-")).getTime())
+    .slice(-7);
+
   const TABS = [
+    { id: "painel",     label: "📊 Painel" },
     { id: "editor",     label: "✏️ Editor de Documento" },
     { id: "municipios", label: "🏛 Municípios" },
     { id: "assinatura", label: "✍ Assinatura" },
@@ -1734,6 +2801,7 @@ export default function App() {
         <button
           style={{ ...S.btnPrimary, marginLeft: "auto" }}
           onClick={() => setModal("enviar-todos")}
+          disabled={!podeEnviarLinks}
         >
           📨 Enviar para todos
         </button>
@@ -1770,6 +2838,44 @@ export default function App() {
         <div style={S.progressFill(pct)} />
       </div>
 
+      <div style={{ ...S.card, marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 8 }}>
+          <div style={S.sectionTitle}>Workflow de aprovação</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button style={S.btn} onClick={exportarRelatorioCsv}>📥 Exportar relatório (CSV)</button>
+            <button
+              style={S.btn}
+              onClick={sincronizarEtapaFluxoNoProcessoApi}
+              disabled={!apiUser || !apiProcessoSelecionadoId}
+              title={apiProcessoSelecionadoId ? "Atualiza o status do processo selecionado na API" : "Selecione um processo no painel API"}
+            >
+              🔄 Sincronizar etapa na API
+            </button>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 8 }}>
+          {ETAPAS_FLUXO.map((etapa, idx) => {
+            const active = etapa.id === etapaFluxo;
+            const done = idx < idxEtapaFluxo;
+            return (
+              <button
+                key={etapa.id}
+                onClick={() => mudarEtapaFluxo(etapa.id)}
+                style={{
+                  ...S.btn,
+                  justifyContent: "center",
+                  borderColor: active ? "var(--color-border-info)" : "var(--color-border-tertiary)",
+                  background: active ? "var(--color-background-info)" : done ? "var(--color-background-success)" : "var(--color-background-primary)",
+                  color: active ? "var(--color-text-info)" : done ? "var(--color-text-success)" : "var(--color-text-secondary)",
+                }}
+              >
+                {done ? "✅" : active ? "📍" : "•"} {etapa.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Abas */}
       <div style={S.tabBar}>
         {TABS.map((t) => (
@@ -1778,6 +2884,447 @@ export default function App() {
           </button>
         ))}
       </div>
+
+      {/* ── ABA: PAINEL ── */}
+      {tab === "painel" && (
+        <div>
+          <div style={S.card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={S.sectionTitle}>Integração com Backend</div>
+              <div style={{ fontSize: 11, color: apiStatus === "online" ? "var(--color-text-success)" : "var(--color-text-danger)" }}>
+                API: {apiStatus === "online" ? "Online" : apiStatus === "offline" ? "Offline" : "Verificando..."}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, marginBottom: 8 }}>
+              <input
+                style={S.input}
+                placeholder="email"
+                value={apiAuth.email}
+                onChange={(e) => setApiAuth((prev) => ({ ...prev, email: e.target.value }))}
+              />
+              <input
+                style={S.input}
+                type="password"
+                placeholder="senha"
+                value={apiAuth.password}
+                onChange={(e) => setApiAuth((prev) => ({ ...prev, password: e.target.value }))}
+              />
+              <button style={S.btnPrimary} onClick={loginBackend}>🔐 Login API</button>
+            </div>
+
+            {apiUser && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 8 }}>
+                <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
+                  Conectado como {apiUser.nome} ({apiUser.role}) {apiSyncing ? "• sincronizando..." : "• sincronizado"}
+                </div>
+                <button
+                  style={S.btnSm}
+                  onClick={() => {
+                    setApiToken("");
+                    setApiUser(null);
+                    setApiMunicipiosLoaded(false);
+                    window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+                    showToast("🔒 Sessão API desconectada");
+                  }}
+                >
+                  Sair da API
+                </button>
+              </div>
+            )}
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8 }}>
+              <input
+                style={S.input}
+                type="date"
+                value={apiDashboardFilters.from}
+                onChange={(e) => setApiDashboardFilters((prev) => ({ ...prev, from: e.target.value }))}
+              />
+              <input
+                style={S.input}
+                type="date"
+                value={apiDashboardFilters.to}
+                onChange={(e) => setApiDashboardFilters((prev) => ({ ...prev, to: e.target.value }))}
+              />
+              <input
+                style={S.input}
+                placeholder="Secretaria"
+                value={apiDashboardFilters.secretaria}
+                onChange={(e) => setApiDashboardFilters((prev) => ({ ...prev, secretaria: e.target.value }))}
+              />
+              <button style={S.btn} onClick={carregarDashboardApi}>Atualizar</button>
+            </div>
+
+            {apiDashboard?.kpi && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginTop: 10 }}>
+                <div style={S.statCard}><div style={S.statNum}>{apiDashboard.kpi.total_processos}</div><div style={S.statLabel}>Processos</div></div>
+                <div style={S.statCard}><div style={S.statNum}>{apiDashboard.kpi.total_documentos}</div><div style={S.statLabel}>Documentos</div></div>
+                <div style={S.statCard}><div style={S.statNum}>{apiDashboard.kpi.media_versoes_por_processo}</div><div style={S.statLabel}>Média versões</div></div>
+                <div style={S.statCard}><div style={{ ...S.statNum, color: "var(--color-text-warning)" }}>{apiDashboard.kpi.processos_atrasados}</div><div style={S.statLabel}>Atrasados</div></div>
+              </div>
+            )}
+          </div>
+
+          <div style={S.card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 8 }}>
+              <div style={S.sectionTitle}>Processos e documentos (API)</div>
+              <button
+                style={S.btn}
+                onClick={() => carregarProcessosApi()}
+                disabled={!apiToken || apiProcessosLoading}
+              >
+                {apiProcessosLoading ? "⏳ Atualizando..." : "↻ Atualizar lista"}
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 160px auto", gap: 8, marginBottom: 8 }}>
+              <input
+                style={S.input}
+                placeholder="Buscar por número ou título"
+                value={apiProcessosFilters.search}
+                onChange={(e) => setApiProcessosFilters((prev) => ({ ...prev, search: e.target.value }))}
+              />
+              <input
+                style={S.input}
+                placeholder="Filtrar por secretaria"
+                value={apiProcessosFilters.secretaria}
+                onChange={(e) => setApiProcessosFilters((prev) => ({ ...prev, secretaria: e.target.value }))}
+              />
+              <select
+                style={S.input}
+                value={apiProcessosFilters.status}
+                onChange={(e) => setApiProcessosFilters((prev) => ({ ...prev, status: e.target.value }))}
+              >
+                <option value="">Todos os status</option>
+                {PROCESSO_STATUS_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>{opt.label}</option>
+                ))}
+              </select>
+              <button
+                style={S.btn}
+                onClick={() => carregarProcessosApi()}
+                disabled={!apiToken || apiProcessosLoading}
+              >
+                Filtrar
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "160px 1fr 1.4fr 170px auto", gap: 8, marginBottom: 12 }}>
+              <input
+                style={S.input}
+                placeholder="Nº processo"
+                value={apiNovoProcesso.numero}
+                onChange={(e) => setApiNovoProcesso((prev) => ({ ...prev, numero: e.target.value }))}
+              />
+              <input
+                style={S.input}
+                placeholder="Secretaria"
+                value={apiNovoProcesso.secretaria}
+                onChange={(e) => setApiNovoProcesso((prev) => ({ ...prev, secretaria: e.target.value }))}
+              />
+              <input
+                style={S.input}
+                placeholder="Título"
+                value={apiNovoProcesso.titulo}
+                onChange={(e) => setApiNovoProcesso((prev) => ({ ...prev, titulo: e.target.value }))}
+              />
+              <select
+                style={S.input}
+                value={apiNovoProcesso.status}
+                onChange={(e) => setApiNovoProcesso((prev) => ({ ...prev, status: e.target.value }))}
+              >
+                {PROCESSO_STATUS_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>{opt.label}</option>
+                ))}
+              </select>
+              <button
+                style={S.btnPrimary}
+                onClick={criarProcessoApi}
+                disabled={!apiToken || apiProcessoSaving}
+              >
+                {apiProcessoSaving ? "⏳" : "➕"} Criar
+              </button>
+            </div>
+
+            {apiProcessos.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+                Nenhum processo retornado com os filtros atuais.
+              </div>
+            ) : (
+              <div style={{ maxHeight: 220, overflowY: "auto", border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, marginBottom: 12 }}>
+                {apiProcessos.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1.1fr 1fr 1.4fr 170px auto",
+                      gap: 8,
+                      alignItems: "center",
+                      padding: "8px 10px",
+                      borderBottom: "0.5px solid var(--color-border-tertiary)",
+                      background: item.id === apiProcessoSelecionadoId ? "var(--color-background-info)" : "var(--color-background-primary)",
+                    }}
+                  >
+                    <div style={{ fontSize: 11, fontWeight: 600 }}>{item.numero}</div>
+                    <div style={{ fontSize: 11 }}>{item.secretaria}</div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{item.titulo}</div>
+                    <select
+                      style={{ ...S.input, height: 30, padding: "2px 8px" }}
+                      value={item.status}
+                      onChange={(e) => atualizarStatusProcessoApi(item.id, e.target.value)}
+                    >
+                      {PROCESSO_STATUS_OPTIONS.map((opt) => (
+                        <option key={opt.id} value={opt.id}>{opt.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      style={S.btnSm}
+                      onClick={() => {
+                        setApiProcessoSelecionadoId(item.id);
+                        setEtapaFluxo(item.status);
+                      }}
+                    >
+                      {item.id === apiProcessoSelecionadoId ? "Selecionado" : "Selecionar"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {apiProcessoSelecionadoId && (
+              <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 8 }}>
+                  Upload de documento para o processo selecionado
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, marginBottom: 8 }}>
+                  <input
+                    ref={apiDocFileInputRef}
+                    type="file"
+                    style={S.input}
+                    onChange={(e) => setApiDocumentoArquivo(e.target.files?.[0] || null)}
+                  />
+                  <input
+                    style={S.input}
+                    placeholder="Observações da versão (opcional)"
+                    value={apiDocumentoNotes}
+                    onChange={(e) => setApiDocumentoNotes(e.target.value)}
+                  />
+                  <button
+                    style={S.btnPrimary}
+                    onClick={enviarDocumentoProcessoApi}
+                    disabled={!apiToken || apiDocUploading}
+                  >
+                    {apiDocUploading ? "⏳" : "📤"} Enviar
+                  </button>
+                </div>
+
+                {apiDocumentos.length === 0 ? (
+                  <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
+                    Nenhuma versão enviada para este processo.
+                  </div>
+                ) : (
+                  <div style={{ maxHeight: 150, overflowY: "auto", border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8 }}>
+                    {apiDocumentos.map((doc) => (
+                      <div
+                        key={doc.id}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "70px 1fr 110px 150px auto",
+                          gap: 8,
+                          fontSize: 11,
+                          padding: "7px 8px",
+                          borderBottom: "0.5px solid var(--color-border-tertiary)",
+                          alignItems: "center",
+                        }}
+                      >
+                        <div>v{doc.version}</div>
+                        <div style={{ color: "var(--color-text-secondary)" }}>{doc.file_name}</div>
+                        <div>{Math.round((doc.size_bytes || 0) / 1024)} KB</div>
+                        <div style={{ color: "var(--color-text-tertiary)" }}>
+                          {doc.created_at ? new Date(doc.created_at).toLocaleString("pt-BR") : "-"}
+                        </div>
+                        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                          <button
+                            style={S.btnSm}
+                            onClick={() => baixarDocumentoProcessoApi(doc.id, doc.file_name, true)}
+                            title="Abrir em nova aba (com fallback para download)"
+                          >
+                            👁️ Abrir
+                          </button>
+                          <button
+                            style={S.btnSm}
+                            onClick={() => baixarDocumentoProcessoApi(doc.id, doc.file_name)}
+                            title="Baixar esta versão"
+                          >
+                            📥 Baixar
+                          </button>
+                          <button
+                            style={S.btnSm}
+                            onClick={() => copiarLinkDocumentoApi(doc.id)}
+                            title="Copiar endpoint da API sem token"
+                          >
+                            🔗 Link
+                          </button>
+                          <button
+                            style={S.btnSm}
+                            onClick={() => copiarComandoDownloadDocumentoApi(doc.id, doc.file_name)}
+                            title="Copiar comando autenticado"
+                          >
+                            📋 cURL
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div style={S.card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 8 }}>
+              <div style={S.sectionTitle}>Alertas SLA e notificações (API)</div>
+              <button
+                style={S.btn}
+                onClick={carregarAlertasSlaApi}
+                disabled={!apiToken || apiSlaLoading}
+              >
+                {apiSlaLoading ? "⏳ Consultando..." : "🔎 Consultar SLA"}
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "170px 1fr auto", gap: 8, marginBottom: 10 }}>
+              <input
+                style={S.input}
+                type="number"
+                min="1"
+                value={apiSlaFilters.days}
+                onChange={(e) => setApiSlaFilters((prev) => ({ ...prev, days: e.target.value }))}
+                placeholder="Dias em atraso"
+              />
+              <input
+                style={S.input}
+                value={apiSlaFilters.secretaria}
+                onChange={(e) => setApiSlaFilters((prev) => ({ ...prev, secretaria: e.target.value }))}
+                placeholder="Filtrar por secretaria (opcional)"
+              />
+              <button
+                style={S.btn}
+                onClick={carregarAlertasSlaApi}
+                disabled={!apiToken || apiSlaLoading}
+              >
+                Atualizar
+              </button>
+            </div>
+
+            <div style={{ marginBottom: 10, fontSize: 12, color: "var(--color-text-secondary)" }}>
+              Processos atrasados no SLA: <strong>{apiSlaData.total || 0}</strong>
+            </div>
+
+            {apiSlaData.items.length > 0 && (
+              <div style={{ maxHeight: 150, overflowY: "auto", border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, marginBottom: 12 }}>
+                {apiSlaData.items.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "130px 1fr 1.5fr 160px",
+                      gap: 8,
+                      padding: "7px 8px",
+                      borderBottom: "0.5px solid var(--color-border-tertiary)",
+                      fontSize: 11,
+                    }}
+                  >
+                    <div style={{ fontWeight: 600 }}>{item.numero}</div>
+                    <div>{item.secretaria}</div>
+                    <div style={{ color: "var(--color-text-secondary)" }}>{item.titulo}</div>
+                    <div style={{ color: "var(--color-text-tertiary)" }}>
+                      {item.updated_at ? new Date(item.updated_at).toLocaleString("pt-BR") : "-"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 8 }}>Enviar notificação de SLA</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                <input
+                  style={S.input}
+                  value={apiNotify.to}
+                  onChange={(e) => setApiNotify((prev) => ({ ...prev, to: e.target.value }))}
+                  placeholder="destino@orgao.mg.gov.br"
+                />
+                <input
+                  style={S.input}
+                  value={apiNotify.subject}
+                  onChange={(e) => setApiNotify((prev) => ({ ...prev, subject: e.target.value }))}
+                  placeholder="Assunto"
+                />
+              </div>
+              <textarea
+                style={{ ...S.input, minHeight: 110, resize: "vertical" }}
+                value={apiNotify.html}
+                onChange={(e) => setApiNotify((prev) => ({ ...prev, html: e.target.value }))}
+                placeholder="Conteúdo HTML da notificação"
+              />
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+                <button
+                  style={S.btnPrimary}
+                  onClick={enviarNotificacaoSlaApi}
+                  disabled={!apiToken || apiNotifySending}
+                >
+                  {apiNotifySending ? "⏳ Enviando..." : "📨 Enviar notificação"}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div style={S.statsGrid}>
+            <div style={S.statCard}>
+              <div style={S.statNum}>{taxaAssinatura}%</div>
+              <div style={S.statLabel}>Taxa de assinatura</div>
+            </div>
+            <div style={S.statCard}>
+              <div style={{ ...S.statNum, color: "var(--color-text-warning)" }}>{atrasados}</div>
+              <div style={S.statLabel}>Municípios em atraso</div>
+            </div>
+            <div style={S.statCard}>
+              <div style={{ ...S.statNum, color: "var(--color-text-info)" }}>{stats.enviados}</div>
+              <div style={S.statLabel}>Com envio iniciado</div>
+            </div>
+            <div style={S.statCard}>
+              <div style={{ ...S.statNum, color: "var(--color-text-success)" }}>{stats.assinados}</div>
+              <div style={S.statLabel}>Contratos assinados</div>
+            </div>
+          </div>
+
+          <div style={S.card}>
+            <div style={S.sectionTitle}>Assinaturas por período (últimos 7 registros)</div>
+            {serieAssinaturas.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
+                Ainda não há assinaturas para montar o gráfico.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 8 }}>
+                {serieAssinaturas.map(([dia, qtd]) => {
+                  const max = Math.max(...serieAssinaturas.map(([, value]) => value), 1);
+                  const width = Math.max(8, Math.round((qtd / max) * 100));
+                  return (
+                    <div key={dia} style={{ display: "grid", gridTemplateColumns: "110px 1fr 40px", gap: 10, alignItems: "center" }}>
+                      <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{dia}</div>
+                      <div style={{ background: "var(--color-background-secondary)", height: 10, borderRadius: 999 }}>
+                        <div style={{ width: `${width}%`, height: 10, borderRadius: 999, background: "var(--color-text-info)" }} />
+                      </div>
+                      <div style={{ fontSize: 11, fontWeight: 500 }}>{qtd}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── ABA: EDITOR ── */}
       {tab === "editor" && (
@@ -1883,14 +3430,14 @@ export default function App() {
             <div style={S.sectionTitle}>Cadastrar município</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8 }}>
               <input
-                style={S.input}
+                style={{ ...S.input, borderColor: novoMunicipioErrors.nome ? "var(--color-border-danger)" : "var(--color-border-secondary)" }}
                 placeholder="Nome do município"
                 value={novoMunicipioNome}
                 onChange={(e) => setNovoMunicipioNome(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && cadastrarMunicipio()}
               />
               <input
-                style={S.input}
+                style={{ ...S.input, borderColor: novoMunicipioErrors.email ? "var(--color-border-danger)" : "var(--color-border-secondary)" }}
                 placeholder="email@municipio.mg.gov.br"
                 value={novoMunicipioEmail}
                 onChange={(e) => setNovoMunicipioEmail(e.target.value)}
@@ -1903,19 +3450,74 @@ export default function App() {
                 ➕ Cadastrar
               </button>
             </div>
+            {(novoMunicipioErrors.nome || novoMunicipioErrors.email) && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, marginTop: 6 }}>
+                <div style={{ fontSize: 11, color: "var(--color-text-danger)" }}>{novoMunicipioErrors.nome}</div>
+                <div style={{ fontSize: 11, color: "var(--color-text-danger)" }}>{novoMunicipioErrors.email}</div>
+                <div />
+              </div>
+            )}
+
+            <div style={{ marginTop: 12, borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: 10 }}>
+              <div style={{ ...S.sectionTitle, fontSize: 13, marginBottom: 8 }}>Importação em lote (CSV/Excel)</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <input
+                  type="file"
+                  accept=".csv,.xls,.xlsx"
+                  onChange={processarArquivoImportacao}
+                  style={{ fontSize: 12 }}
+                />
+                {importFileName && (
+                  <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>Arquivo: {importFileName}</div>
+                )}
+                {importSummary && (
+                  <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
+                    Total: {importSummary.total} | Válidos: {importSummary.valid} | Inválidos: {importSummary.invalid}
+                  </div>
+                )}
+                {importRows.length > 0 && (
+                  <button style={S.btnPrimary} onClick={confirmarImportacao}>✅ Confirmar importação</button>
+                )}
+              </div>
+              {importRows.length > 0 && (
+                <div style={{ marginTop: 10, maxHeight: 160, overflowY: "auto", border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8 }}>
+                  {importRows.map((row) => (
+                    <div
+                      key={`${row.rowIndex}-${row.nome}-${row.email}`}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "58px 1fr 1fr 1.4fr",
+                        gap: 8,
+                        padding: "6px 8px",
+                        borderBottom: "0.5px solid var(--color-border-tertiary)",
+                        fontSize: 11,
+                      }}
+                    >
+                      <div>L{row.rowIndex}</div>
+                      <div>{row.nome || "-"}</div>
+                      <div>{row.email || "-"}</div>
+                      <div style={{ color: row.valid ? "var(--color-text-success)" : "var(--color-text-danger)" }}>
+                        {row.valid ? "Válido" : row.issues.join("; ")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {editandoMunicipioId !== null && (
               <div style={{ marginTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: 10 }}>
                 <div style={{ ...S.sectionTitle, fontSize: 13, marginBottom: 8 }}>Editar município</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 8 }}>
                   <input
-                    style={S.input}
+                    style={{ ...S.input, borderColor: edicaoMunicipioErrors.nome ? "var(--color-border-danger)" : "var(--color-border-secondary)" }}
                     placeholder="Nome do município"
                     value={edicaoMunicipioNome}
                     onChange={(e) => setEdicaoMunicipioNome(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && salvarEdicaoMunicipio()}
                   />
                   <input
-                    style={S.input}
+                    style={{ ...S.input, borderColor: edicaoMunicipioErrors.email ? "var(--color-border-danger)" : "var(--color-border-secondary)" }}
                     placeholder="email@municipio.mg.gov.br"
                     value={edicaoMunicipioEmail}
                     onChange={(e) => setEdicaoMunicipioEmail(e.target.value)}
@@ -1934,6 +3536,14 @@ export default function App() {
                     Cancelar
                   </button>
                 </div>
+                {(edicaoMunicipioErrors.nome || edicaoMunicipioErrors.email) && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 8, marginTop: 6 }}>
+                    <div style={{ fontSize: 11, color: "var(--color-text-danger)" }}>{edicaoMunicipioErrors.nome}</div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-danger)" }}>{edicaoMunicipioErrors.email}</div>
+                    <div />
+                    <div />
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1948,16 +3558,41 @@ export default function App() {
               Horários de ativação escalonados automaticamente
             </div>
           </div>
+
+          <div style={{ ...S.card, marginBottom: 12 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
+                {selecionados.length} selecionado(s)
+              </div>
+              <button style={S.btnSm} onClick={enviarSelecionados}>📨 Enviar selecionados</button>
+              <select
+                style={{ ...S.input, maxWidth: 170, height: 28, padding: "2px 8px", fontSize: 12 }}
+                value={statusEmMassa}
+                onChange={(e) => setStatusEmMassa(e.target.value)}
+              >
+                <option value="pendente">Pendente</option>
+                <option value="enviado">Enviado</option>
+                <option value="assinado">Assinado</option>
+              </select>
+              <button style={S.btnSm} onClick={aplicarStatusEmMassa}>🧩 Aplicar status</button>
+              <button style={{ ...S.btnSm, color: "var(--color-text-danger)" }} onClick={excluirSelecionados}>🗑️ Excluir selecionados</button>
+              <button style={S.btnSm} onClick={limparSelecao}>Limpar seleção</button>
+            </div>
+          </div>
+
           <div style={S.card}>
             <div style={{ maxHeight: 520, overflowY: "auto" }}>
               <div style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 140px 90px 130px",
+                gridTemplateColumns: "28px 1fr 140px 90px 130px",
                 gap: 8, padding: "6px 0",
                 fontSize: 11, color: "var(--color-text-tertiary)",
                 borderBottom: "0.5px solid var(--color-border-tertiary)",
                 marginBottom: 4,
               }}>
+                <span style={{ textAlign: "center" }}>
+                  <input type="checkbox" checked={allFilteredSelected} onChange={toggleSelecionarTodosFiltrados} />
+                </span>
                 <span>Município</span>
                 <span style={{ textAlign: "center" }}>Ativação do link</span>
                 <span style={{ textAlign: "center" }}>Status</span>
@@ -1968,12 +3603,19 @@ export default function App() {
                   key={m.id}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "1fr 140px 90px 130px",
+                    gridTemplateColumns: "28px 1fr 140px 90px 130px",
                     alignItems: "center", gap: 8,
                     padding: "9px 0",
                     borderBottom: "0.5px solid var(--color-border-tertiary)",
                   }}
                 >
+                  <div style={{ textAlign: "center" }}>
+                    <input
+                      type="checkbox"
+                      checked={selecionados.includes(m.id)}
+                      onChange={() => toggleSelecionado(m.id)}
+                    />
+                  </div>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 500 }}>{m.nome}</div>
                     <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
@@ -2206,6 +3848,35 @@ export default function App() {
       {/* ── ABA: REGISTRO ── */}
       {tab === "registro" && (
         <div>
+          <div style={S.card}>
+            <div style={S.sectionTitle}>Trilha de auditoria</div>
+            {auditoria.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
+                Nenhum evento registrado ainda.
+              </div>
+            ) : (
+              <div style={{ maxHeight: 180, overflowY: "auto", display: "grid", gap: 6 }}>
+                {auditoria.slice(0, 25).map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "160px 220px 1fr",
+                      gap: 8,
+                      fontSize: 11,
+                      borderBottom: "0.5px solid var(--color-border-tertiary)",
+                      paddingBottom: 6,
+                    }}
+                  >
+                    <div style={{ color: "var(--color-text-secondary)" }}>{new Date(item.at).toLocaleString("pt-BR")}</div>
+                    <div style={{ fontWeight: 500 }}>{item.acao}</div>
+                    <div>{item.detalhes}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div style={S.card}>
             <div style={S.sectionTitle}>
               Assinaturas recebidas ({stats.assinados} de {totalMunicipios})

@@ -27,6 +27,79 @@ npm start
 
 Aplicação disponível em http://localhost:3000.
 
+## Backend completo (Node + SQLite)
+
+Foi adicionada uma API backend com autenticação por perfil, auditoria imutável assinada, processos com versionamento de documentos e dashboard com filtros avançados.
+
+### Executar backend
+
+```bash
+npm --prefix backend install
+npm run start:api
+```
+
+API disponível em http://localhost:4000.
+
+Usuário inicial (seed):
+
+- email: admin@consorcio.mg.gov.br
+- senha: Admin@123
+
+### Recursos implementados
+
+- Autenticação JWT com perfis: admin, juridico, operador, auditor.
+- Matriz RBAC por ação (permissão fina por endpoint).
+- API de auditoria imutável com hash encadeado e assinatura HMAC.
+- Upload de documentos por processo com versionamento automático.
+- Dashboard com filtros por período e secretaria.
+- Alertas de SLA para processos atrasados.
+- Endpoint de disparo de notificação por e-mail (SMTP configurável).
+- Proteções de segurança: rate limit + lock temporário após tentativas de login inválidas.
+
+### Principais endpoints
+
+- POST /api/auth/login
+- GET /api/auth/me
+- POST /api/users (admin)
+- GET /api/municipios
+- PUT /api/municipios/snapshot
+- GET /api/processos?secretaria=&status=&from=&to=&search=
+- POST /api/processos
+- PATCH /api/processos/:id
+- GET /api/processos/:id/documentos
+- POST /api/processos/:id/documentos (multipart field: arquivo)
+- GET /api/documentos/:id/download
+- GET /api/auditoria?from=&to=&action=&resourceType=
+- GET /api/dashboard?from=&to=&secretaria=
+- GET /api/alerts/sla?days=&secretaria=
+- POST /api/alerts/notify
+
+### Operação
+
+- Backup local do banco SQLite:
+
+```bash
+npm --prefix backend run backup
+```
+
+- CI automatizado em GitHub Actions com:
+	- build/test frontend
+	- smoke test backend
+
+### Arquitetura do backend
+
+```text
+backend/
+├── src/
+│   ├── server.js      # rotas e middlewares
+│   ├── db.js          # schema SQLite + seed
+│   ├── auth.js        # JWT + controle de perfis
+│   ├── audit.js       # logs imutáveis assinados
+│   └── config.js      # configuração via ambiente
+├── uploads/           # arquivos versionados por processo
+└── data.sqlite        # banco local
+```
+
 ## Fluxo recomendado de uso
 
 1. Abra a aba Editor de Documento.
@@ -49,7 +122,7 @@ Aplicação disponível em http://localhost:3000.
 - Preenchimento guiado em modal com campos automáticos: número do processo, modalidade, secretaria, objeto, valor, vigência, município, data e responsável técnico.
 - Rascunho dos campos salvo automaticamente no navegador para reutilização em novos documentos.
 - Ação `🧹 Limpar rascunho` no modal para resetar os dados salvos.
-- Painel de 30 municípios com status: pendente, enviado e assinado.
+- Painel de municípios com status: pendente, enviado e assinado.
 - Links únicos com janela de ativação escalonada.
 - Simulação de assinatura com data/hora, geolocalização e hash.
 - Prévia completa do documento com timbrado institucional.

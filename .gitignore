@@ -3,3 +3,6 @@ build/
 .env
 .DS_Store
 *.local
+backend/node_modules/
+backend/uploads/
+backend/data.sqlite
