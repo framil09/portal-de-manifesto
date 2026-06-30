@@ -73,6 +73,7 @@ Usuário inicial (seed):
 - GET /api/dashboard?from=&to=&secretaria=
 - GET /api/alerts/sla?days=&secretaria=
 - POST /api/alerts/notify
+- POST /api/assinaturas/teste-envio
 
 ### Operação
 
@@ -176,6 +177,30 @@ Para ambiente real:
 1. Nunca use segredos padrão (`JWT_SECRET`, `AUDIT_SECRET`, `SEED_ADMIN_PASSWORD`).
 2. Defina `CORS_ORIGINS` apenas com domínios permitidos.
 3. Configure SMTP para envio real de notificações.
+
+## Envio sem SMTP (recomendado)
+
+Você pode disparar e-mails sem configurar SMTP usando provedor por API (Resend).
+
+No arquivo `.env` da raiz:
+
+```env
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=sua_chave_resend
+RESEND_FROM=nao-responda@seudominio.com
+```
+
+Com isso, o botão de disparo envia pelos e-mails cadastrados sem precisar `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER` e `SMTP_PASS`.
+
+Alternativa gratuita: Brevo (plano free).
+
+```env
+EMAIL_PROVIDER=brevo
+BREVO_API_KEY=sua_chave_brevo
+BREVO_FROM=seuemail@dominio.com
+```
+
+No modo `auto`, o backend tenta nesta ordem: `resend` -> `brevo` -> `smtp`.
 
 ## Licença
 

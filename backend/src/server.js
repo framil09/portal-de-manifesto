@@ -154,6 +154,17 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "manifestacao-backend" });
 });
 
+app.get("/api/client-info", (req, res) => {
+  const forwardedFor = req.headers["x-forwarded-for"];
+  const forwardedIp =
+    typeof forwardedFor === "string" && forwardedFor.trim()
+      ? forwardedFor.split(",")[0].trim()
+      : null;
+  const ip = forwardedIp || req.ip || req.socket?.remoteAddress || null;
+  const device = String(req.headers["user-agent"] || "");
+  res.json({ ip, device });
+});
+
 app.get("/api/csrf-token", (req, res) => {
   const token = generateCsrfToken();
   const hmac = crypto.createHmac("sha256", config.csrfSecret).update(token).digest("hex");
@@ -317,7 +328,7 @@ app.post("/api/users", authRequired, requirePermission("users:create"), async (r
 app.get("/api/municipios", authRequired, requirePermission("municipios:read"), async (_req, res) => {
   const db = getDb();
   const items = await db.all(
-    `SELECT id, nome, email, token, activate_at, status, signed_at, geo_lat, geo_lon, hash
+    `SELECT id, nome, email, token, activate_at, status, signed_at, geo_lat, geo_lon, signer_ip, device_info, hash
      FROM municipios
      ORDER BY id ASC`
   );
@@ -336,6 +347,8 @@ app.put("/api/municipios/snapshot", authRequired, requirePermission("municipios:
         status: z.enum(["pendente", "enviado", "assinado"]),
         signedAt: z.string().nullable().optional(),
         geo: z.object({ lat: z.number(), lon: z.number() }).nullable().optional(),
+        ip: z.string().max(120).nullable().optional(),
+        device: z.string().max(1024).nullable().optional(),
         hash: z.string().nullable().optional(),
       })
     ),
@@ -352,8 +365,8 @@ app.put("/api/municipios/snapshot", authRequired, requirePermission("municipios:
     await db.run("DELETE FROM municipios");
     for (const item of parsed.data.items) {
       await db.run(
-        `INSERT INTO municipios (id, nome, email, token, activate_at, status, signed_at, geo_lat, geo_lon, hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO municipios (id, nome, email, token, activate_at, status, signed_at, geo_lat, geo_lon, signer_ip, device_info, hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           item.id,
           item.nome,
@@ -364,6 +377,8 @@ app.put("/api/municipios/snapshot", authRequired, requirePermission("municipios:
           item.signedAt || null,
           item.geo?.lat ?? null,
           item.geo?.lon ?? null,
+          item.ip || null,
+          item.device || null,
           item.hash || null,
         ]
       );
@@ -747,6 +762,156 @@ app.get("/api/alerts/sla", authRequired, requirePermission("alerts:read"), async
     days,
     total: items.length,
     items,
+  });
+});
+
+app.post("/api/assinaturas/disparar", async (req, res) => {
+  const schema = z.object({
+    to: z.string().email(),
+    subject: z.string().min(5),
+    html: z.string().min(5),
+    municipio: z.string().min(1).max(180).optional(),
+  });
+
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Payload inválido", details: parsed.error.flatten() });
+  }
+
+  const result = await sendNotification({
+    to: parsed.data.to,
+    subject: parsed.data.subject,
+    html: parsed.data.html,
+  });
+
+  await appendAuditLog({
+    actor: null,
+    action: "assinatura.dispatch",
+    resourceType: "notification",
+    payload: {
+      to: parsed.data.to,
+      municipio: parsed.data.municipio || null,
+      sent: result.sent,
+      reason: result.reason || null,
+      source: "public-endpoint",
+    },
+  });
+
+  return res.json(result);
+});
+
+app.post("/api/assinaturas/teste-envio", async (req, res) => {
+  const schema = z.object({
+    to: z.string().email(),
+    municipio: z.string().min(1).max(180).optional(),
+    subject: z.string().min(5).max(180).optional(),
+    html: z.string().min(5).max(50000).optional(),
+  });
+
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Payload inválido", details: parsed.error.flatten() });
+  }
+
+  const municipio = parsed.data.municipio || "Município Teste";
+  const subject = parsed.data.subject || `Teste de envio - Assinatura (${municipio})`;
+  const html =
+    parsed.data.html ||
+    [
+      `<p>Este é um <strong>teste de envio</strong> do sistema de manifestações.</p>`,
+      `<p>Município de referência: <strong>${municipio}</strong></p>`,
+      `<p>Horário: ${new Date().toLocaleString("pt-BR")}</p>`,
+      `<p>Se recebeu este e-mail, o disparo está funcionando corretamente.</p>`,
+    ].join("");
+
+  const result = await sendNotification({
+    to: parsed.data.to,
+    subject,
+    html,
+  });
+
+  await appendAuditLog({
+    actor: null,
+    action: "assinatura.teste_envio",
+    resourceType: "notification",
+    payload: {
+      to: parsed.data.to,
+      municipio,
+      sent: result.sent,
+      reason: result.reason || null,
+      source: "public-endpoint",
+    },
+  });
+
+  return res.json(result);
+});
+
+app.post("/api/assinaturas/disparar-lote", async (req, res) => {
+  const schema = z.object({
+    documentoHtml: z.string().max(25000).optional(),
+    itens: z
+      .array(
+        z.object({
+          to: z.string().email(),
+          municipio: z.string().min(1).max(180),
+          linkAssinatura: z.string().min(10),
+        })
+      )
+      .min(1)
+      .max(500),
+  });
+
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Payload inválido", details: parsed.error.flatten() });
+  }
+
+  const corpoDocumento = (parsed.data.documentoHtml || "").trim().slice(0, 20000);
+  const enviados = [];
+  const falhas = [];
+
+  for (const item of parsed.data.itens) {
+    const subject = `Manifestação de Interesse - Assinatura (${item.municipio})`;
+    const html = [
+      `<p>Prezados(as),</p>`,
+      `<p>Segue o link para assinatura da manifestação de interesse do município <strong>${item.municipio}</strong>.</p>`,
+      `<p><a href="${item.linkAssinatura}" target="_blank" rel="noopener noreferrer">Clique aqui para assinar o documento</a></p>`,
+      `<p>Se o botão não abrir, copie e cole o link abaixo no navegador:</p>`,
+      `<p style="word-break:break-all;"><code>${item.linkAssinatura}</code></p>`,
+      `<hr/>`,
+      `<p><strong>Documento para assinatura:</strong></p>`,
+      corpoDocumento || `<p><em>Documento não informado no momento do disparo.</em></p>`,
+    ].join("");
+
+    const result = await sendNotification({
+      to: item.to,
+      subject,
+      html,
+    });
+
+    if (result.sent) {
+      enviados.push({ municipio: item.municipio, to: item.to });
+    } else {
+      falhas.push({ municipio: item.municipio, to: item.to, reason: result.reason || "falha" });
+    }
+  }
+
+  await appendAuditLog({
+    actor: null,
+    action: "assinatura.dispatch.lote",
+    resourceType: "notification",
+    payload: {
+      total: parsed.data.itens.length,
+      enviados: enviados.length,
+      falhas: falhas.length,
+      source: "public-endpoint",
+    },
+  });
+
+  return res.json({
+    total: parsed.data.itens.length,
+    enviados,
+    falhas,
   });
 });
 

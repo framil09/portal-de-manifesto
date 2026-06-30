@@ -39,9 +39,16 @@ const MUNICIPIOS_MG = [
 // Edite aqui para adicionar ou trocar municípios com seus respectivos emails
 
 function gerarToken(nome) {
-  return btoa(nome + Date.now() + Math.random())
+  const normalized = String(nome || "municipio")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const base = btoa(`manifestacao-assinatura:${normalized}`)
     .replace(/[^a-zA-Z0-9]/g, "")
-    .slice(0, 16);
+    .toUpperCase();
+  return (base || "MUNICIPIO").slice(0, 20);
 }
 
 function gerarHorario(index) {
@@ -351,6 +358,26 @@ const MUNICIPIOS_STORAGE_KEY = "manifestacao.municipios.v1";
 const AUDITORIA_STORAGE_KEY = "manifestacao.auditoria.v1";
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:4000";
 
+function buildAssinaturaLink(token) {
+  const origin = window.location.origin;
+  const basePath = window.location.pathname.endsWith("/")
+    ? window.location.pathname.slice(0, -1)
+    : window.location.pathname;
+  return `${origin}${basePath || ""}/#/assinar/${encodeURIComponent(token)}`;
+}
+
+function getAssinaturaTokenFromUrl() {
+  const hash = window.location.hash || "";
+  const hashMatch = hash.match(/^#\/assinar\/([^/?#]+)/i);
+  if (hashMatch?.[1]) return decodeURIComponent(hashMatch[1]);
+
+  const pathMatch = window.location.pathname.match(/\/assinar\/([^/?#]+)/i);
+  if (pathMatch?.[1]) return decodeURIComponent(pathMatch[1]);
+
+  const queryToken = new URLSearchParams(window.location.search).get("token");
+  return queryToken ? decodeURIComponent(queryToken) : "";
+}
+
 const EMAIL_INSTITUCIONAL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
 const DOMINIOS_PESSOAIS_BLOQUEADOS = [
   "gmail.com",
@@ -545,6 +572,8 @@ const initialMunicipios = MUNICIPIOS_MG.map((m, i) => ({
   status: "pendente", // pendente | enviado | assinado
   signedAt: null,
   geo: null,
+  ip: null,
+  device: null,
   hash: null,
 }));
 
@@ -891,6 +920,8 @@ function DocPreview({ municipio, docHtml, signData }) {
             {signData.cargo} — {municipio}<br />
             Assinado em: {new Date(signData.at).toLocaleString("pt-BR")}<br />
             Geolocalização: {signData.lat?.toFixed(6)}, {signData.lon?.toFixed(6)}<br />
+            IP: {signData.ip || "Não disponível"}<br />
+            Aparelho: {signData.device || "Não disponível"}<br />
             <span style={{ fontFamily: "monospace", fontSize: 10 }}>Hash: {signData.hash}</span>
           </div>
         </div>
@@ -925,6 +956,23 @@ function PainelAssinatura({ municipio, onSign, totalMunicipios = 0 }) {
   const [step, setStep] = useState("waiting");
   const [data, setData] = useState(null);
 
+  const obterAparelho = () => {
+    const platform = navigator.userAgentData?.platform || navigator.platform || "Plataforma desconhecida";
+    const userAgent = navigator.userAgent || "User-Agent indisponível";
+    return `${platform} | ${userAgent}`;
+  };
+
+  const obterIp = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/client-info`);
+      const payload = await res.json();
+      if (!res.ok) return "Não disponível";
+      return typeof payload.ip === "string" && payload.ip.trim() ? payload.ip.trim() : "Não disponível";
+    } catch {
+      return "Não disponível";
+    }
+  };
+
   const assinar = () => {
     setStep("geo");
     const capturar = () => {
@@ -946,13 +994,16 @@ function PainelAssinatura({ municipio, onSign, totalMunicipios = 0 }) {
     setTimeout(capturar, 900);
   };
 
-  const finalizar = (lat, lon) => {
+  const finalizar = async (lat, lon) => {
+    const [ip, device] = await Promise.all([obterIp(), Promise.resolve(obterAparelho())]);
     const sig = {
       nome: "Representante Municipal",
       cargo: "Prefeito(a) Municipal",
       at: new Date().toISOString(),
       lat,
       lon,
+      ip,
+      device,
       hash: "SIG-" + Math.random().toString(36).slice(2, 12).toUpperCase(),
     };
     setData(sig);
@@ -989,6 +1040,8 @@ function PainelAssinatura({ municipio, onSign, totalMunicipios = 0 }) {
             <div style={{ color: "var(--color-text-secondary)", lineHeight: 1.8 }}>
               <div>📅 {new Date(data.at).toLocaleString("pt-BR")}</div>
               <div>📍 Lat {data.lat.toFixed(6)}, Lon {data.lon.toFixed(6)}</div>
+              <div>🌐 IP {data.ip}</div>
+              <div style={{ wordBreak: "break-all" }}>💻 {data.device}</div>
               <div>
                 🔐 Hash:{" "}
                 <span style={{ fontFamily: "monospace", fontSize: 11 }}>{data.hash}</span>
@@ -1035,7 +1088,7 @@ function PainelAssinatura({ municipio, onSign, totalMunicipios = 0 }) {
           fontSize: 10, color: "var(--color-text-tertiary)",
           textAlign: "center", marginTop: 8,
         }}>
-          Ao clicar, você concorda com a captura de data, hora e geolocalização
+          Ao clicar, você concorda com a captura de data, hora, geolocalização, IP e aparelho
           para fins de assinatura eletrônica.
         </div>
       </div>
@@ -1250,6 +1303,8 @@ export default function App() {
   const [novoMunicipioErrors, setNovoMunicipioErrors] = useState({ nome: "", email: "" });
   const [edicaoMunicipioErrors, setEdicaoMunicipioErrors] = useState({ nome: "", email: "" });
   const [selecionados, setSelecionados] = useState([]);
+  const [editorVinculosSelecionados, setEditorVinculosSelecionados] = useState([]);
+  const [editorVinculosBusca, setEditorVinculosBusca] = useState("");
   const [statusEmMassa, setStatusEmMassa] = useState("enviado");
   const [importRows, setImportRows] = useState([]);
   const [importSummary, setImportSummary] = useState(null);
@@ -1258,7 +1313,6 @@ export default function App() {
   const [auditoria, setAuditoria] = useState([]);
   const [apiStatus, setApiStatus] = useState("checking");
   const [apiToken, setApiToken] = useState("");
-  const [apiCsrfToken, setApiCsrfToken] = useState("");
   const [apiUser, setApiUser] = useState(null);
   const [apiAuth, setApiAuth] = useState({ email: "admin@consorcio.mg.gov.br", password: "" });
   const [apiDashboard, setApiDashboard] = useState(null);
@@ -1290,6 +1344,10 @@ export default function App() {
     html: "",
   });
   const apiDocFileInputRef = useRef(null);
+  const assinaturaTokenProcessadoRef = useRef("");
+  const assinaturaTokenUrl = getAssinaturaTokenFromUrl();
+  const assinaturaPublicaAtiva = Boolean(assinaturaTokenUrl);
+  const [assinaturaPublicaProcessando, setAssinaturaPublicaProcessando] = useState(false);
 
   useEffect(() => {
     try {
@@ -1318,6 +1376,8 @@ export default function App() {
             status: item.status === "enviado" || item.status === "assinado" ? item.status : "pendente",
             signedAt: typeof item.signedAt === "string" ? item.signedAt : null,
             geo: item.geo && typeof item.geo === "object" ? item.geo : null,
+            ip: typeof item.ip === "string" ? item.ip : null,
+            device: typeof item.device === "string" ? item.device : null,
             hash: typeof item.hash === "string" ? item.hash : null,
           };
         });
@@ -1330,6 +1390,126 @@ export default function App() {
       // Ignora erro de leitura da lista de municípios para não interromper o fluxo.
     }
   }, []);
+
+  useEffect(() => {
+    if (!assinaturaTokenUrl || assinaturaTokenProcessadoRef.current === assinaturaTokenUrl) return;
+
+    const municipioLink = municipios.find((m) => m.token === assinaturaTokenUrl);
+    if (!municipioLink) return;
+
+    assinaturaTokenProcessadoRef.current = assinaturaTokenUrl;
+
+    const assinarPorLink = async () => {
+      setAssinaturaPublicaProcessando(true);
+      const fallbackLat = -21.79 + (Math.random() - 0.5) * 0.3;
+      const fallbackLon = -46.56 + (Math.random() - 0.5) * 0.3;
+
+      const geo = await new Promise((resolve) => {
+        if (!navigator.geolocation) {
+          resolve({ lat: fallbackLat, lon: fallbackLon });
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+          },
+          () => {
+            resolve({ lat: fallbackLat, lon: fallbackLon });
+          },
+          { timeout: 6000 }
+        );
+      });
+
+      let ip = "Não disponível";
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/client-info`);
+        const payload = await res.json();
+        if (res.ok && typeof payload.ip === "string" && payload.ip.trim()) {
+          ip = payload.ip.trim();
+        }
+      } catch {
+        // Mantém valor padrão se não conseguir capturar IP.
+      }
+
+      const platform = navigator.userAgentData?.platform || navigator.platform || "Plataforma desconhecida";
+      const userAgent = navigator.userAgent || "User-Agent indisponível";
+      const device = `${platform} | ${userAgent}`;
+
+      const sig = {
+        nome: "Representante Municipal",
+        cargo: "Prefeito(a) Municipal",
+        at: new Date().toISOString(),
+        lat: geo.lat,
+        lon: geo.lon,
+        ip,
+        device,
+        hash: "SIG-" + Math.random().toString(36).slice(2, 12).toUpperCase(),
+      };
+
+      const signedMunicipio = {
+        ...municipioLink,
+        status: "assinado",
+        signedAt: sig.at,
+        geo: { lat: sig.lat, lon: sig.lon },
+        ip: sig.ip,
+        device: sig.device,
+        hash: sig.hash,
+      };
+
+      setMunicipios((prev) =>
+        prev.map((m) =>
+          m.id === municipioLink.id
+            ? {
+                ...m,
+                status: "assinado",
+                signedAt: sig.at,
+                geo: { lat: sig.lat, lon: sig.lon },
+                ip: sig.ip,
+                device: sig.device,
+                hash: sig.hash,
+              }
+            : m
+        )
+      );
+      setSigns((prev) => ({ ...prev, [municipioLink.id]: sig }));
+      setSelectedMuni(signedMunicipio);
+      setContratoSelecionado(signedMunicipio);
+      if (!assinaturaPublicaAtiva) {
+        setTab("contratos");
+      }
+      if (["rascunho", "revisao", "envio"].includes(etapaFluxo)) {
+        setEtapaFluxo("assinaturas");
+      }
+
+      const auditEntry = {
+        id: Date.now() + Math.random(),
+        at: new Date().toISOString(),
+        acao: "assinatura.link",
+        detalhes: `${municipioLink.nome} assinou via link`,
+      };
+      setAuditoria((prev) => [auditEntry, ...prev].slice(0, 300));
+
+      setToast(`✅ ${municipioLink.nome} assinou automaticamente. Contrato pronto para download.`);
+      setTimeout(() => setToast(null), 3200);
+
+      setAssinaturaPublicaProcessando(false);
+    };
+
+    if (municipioLink.status === "assinado" && municipioLink.hash) {
+      setSelectedMuni(municipioLink);
+      setContratoSelecionado(municipioLink);
+      if (!assinaturaPublicaAtiva) {
+        setTab("contratos");
+      }
+      setToast(`📄 ${municipioLink.nome} já estava assinado. Contrato pronto para download.`);
+      setTimeout(() => setToast(null), 2800);
+      setAssinaturaPublicaProcessando(false);
+      return;
+    }
+
+    assinarPorLink();
+  }, [assinaturaTokenUrl, assinaturaPublicaAtiva, municipios, etapaFluxo]);
 
   useEffect(() => {
     try {
@@ -1416,6 +1596,8 @@ export default function App() {
     geo: item.geo && typeof item.geo === "object"
       ? { lat: Number(item.geo.lat), lon: Number(item.geo.lon) }
       : null,
+    ip: item.ip || null,
+    device: item.device || null,
     hash: item.hash || null,
   }), []);
 
@@ -1431,6 +1613,8 @@ export default function App() {
       typeof item.geo_lat === "number" && typeof item.geo_lon === "number"
         ? { lat: item.geo_lat, lon: item.geo_lon }
         : null,
+    ip: item.signer_ip || null,
+    device: item.device_info || null,
     hash: item.hash || null,
   }), []);
 
@@ -1619,7 +1803,6 @@ export default function App() {
     } finally {
       setApiToken("");
       setApiUser(null);
-      setApiCsrfToken("");
       setApiMunicipiosLoaded(false);
       showToast("🔒 Sessão API desconectada");
     }
@@ -1631,7 +1814,6 @@ export default function App() {
         method: "GET",
       });
       const csrfData = await res.json();
-      setApiCsrfToken(csrfData.token);
 
       const res2 = await fetch(`${API_BASE_URL}/api/auth/login`, {
         method: "POST",
@@ -2052,6 +2234,8 @@ export default function App() {
       status: "pendente",
       signedAt: null,
       geo: null,
+      ip: null,
+      device: null,
       hash: null,
     };
 
@@ -2214,7 +2398,7 @@ export default function App() {
     showToast(`🗑️ ${removidos.length} município(s) removido(s)`);
   };
 
-  const enviarSelecionados = () => {
+  const enviarSelecionados = async () => {
     if (!podeEnviarLinks) {
       showToast("⚠️ Avance o fluxo para a etapa de Envio antes de disparar links");
       return;
@@ -2223,11 +2407,75 @@ export default function App() {
       showToast("⚠️ Selecione ao menos um município");
       return;
     }
-    setMunicipios((prev) =>
-      prev.map((m) => (selecionados.includes(m.id) ? { ...m, status: "enviado" } : m))
+
+    const selecionadosSet = new Set(selecionados);
+    const alvo = municipios.filter((m) => selecionadosSet.has(m.id));
+    const { enviados, falhas } = await enviarLoteAssinatura(alvo);
+
+    if (enviados.length > 0) {
+      const sentSet = new Set(enviados);
+      setMunicipios((prev) =>
+        prev.map((m) => (sentSet.has(m.id) ? { ...m, status: "enviado" } : m))
+      );
+    }
+
+    registrarAuditoria("envio.massa", `${enviados.length}/${alvo.length} município(s)`);
+    if (falhas.length > 0) {
+      const firstReason = falhas[0]?.reason ? ` (${falhas[0].reason})` : "";
+      showToast(`⚠️ Disparo parcial: ${enviados.length}/${alvo.length} enviado(s). Falhas: ${falhas.length}${firstReason}`);
+    } else {
+      showToast(`✅ Disparo concluído: ${enviados.length}/${alvo.length} e-mail(s) enviados`);
+    }
+  };
+
+  const abrirModalVincularPrefeituras = () => {
+    if (!docHtml?.trim()) {
+      showToast("⚠️ Crie o corpo do documento antes de disparar para assinatura");
+      return;
+    }
+
+    const idsComEmail = municipios
+      .filter((m) => m.email && EMAIL_INSTITUCIONAL_RE.test(String(m.email).trim().toLowerCase()))
+      .map((m) => m.id);
+
+    setEditorVinculosSelecionados(idsComEmail);
+    setEditorVinculosBusca("");
+    setModal("vincular-prefeituras");
+  };
+
+  const alternarVinculoPrefeitura = (id) => {
+    setEditorVinculosSelecionados((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
-    registrarAuditoria("envio.massa", `${selecionados.length} município(s)`);
-    showToast(`📨 ${selecionados.length} link(s) enviados`);
+  };
+
+  const dispararAssinaturaPeloEditor = async () => {
+    const selecionadosSet = new Set(editorVinculosSelecionados);
+    const alvo = municipios.filter((m) => selecionadosSet.has(m.id));
+
+    if (alvo.length === 0) {
+      showToast("⚠️ Selecione ao menos uma prefeitura");
+      return;
+    }
+
+    const { enviados, falhas } = await enviarLoteAssinatura(alvo);
+
+    if (enviados.length > 0) {
+      const sentSet = new Set(enviados);
+      setMunicipios((prev) =>
+        prev.map((m) => (sentSet.has(m.id) ? { ...m, status: "enviado" } : m))
+      );
+    }
+
+    registrarAuditoria("envio.editor.vinculo", `${enviados.length}/${alvo.length} prefeitura(s)`);
+    setModal(null);
+
+    if (falhas.length > 0) {
+      const firstReason = falhas[0]?.reason ? ` (${falhas[0].reason})` : "";
+      showToast(`⚠️ Disparo parcial: ${enviados.length}/${alvo.length} enviado(s). Falhas: ${falhas.length}${firstReason}`);
+    } else {
+      showToast(`✅ Disparo concluído: ${enviados.length}/${alvo.length} e-mail(s) enviados`);
+    }
   };
 
   const processarArquivoImportacao = async (evt) => {
@@ -2329,6 +2577,8 @@ export default function App() {
       status: "pendente",
       signedAt: null,
       geo: null,
+      ip: null,
+      device: null,
       hash: null,
     }));
 
@@ -2349,12 +2599,14 @@ export default function App() {
   };
 
   const exportarRelatorioCsv = () => {
-    const header = ["Municipio", "Email", "Status", "AssinadoEm", "Hash"];
+    const header = ["Municipio", "Email", "Status", "AssinadoEm", "IP", "Aparelho", "Hash"];
     const lines = municipios.map((m) => [
       m.nome,
       m.email,
       m.status,
       m.signedAt ? new Date(m.signedAt).toLocaleString("pt-BR") : "",
+      m.ip || "",
+      m.device || "",
       m.hash || "",
     ]);
     const csv = [header, ...lines]
@@ -2370,38 +2622,197 @@ export default function App() {
     registrarAuditoria("relatorio.exportado", "CSV de municípios");
   };
 
-  const enviarUm = (id) => {
+  const enviarEmailAssinaturaApi = useCallback(
+    async (muni, linkAssinatura) => {
+      const subject = `Manifestação de Interesse - Assinatura (${muni.nome})`;
+      const corpoDocumento = (docHtml || "")
+        .trim()
+        .slice(0, 20000);
+      const html = [
+        `<p>Prezados(as),</p>`,
+        `<p>Segue o link para assinatura da manifestação de interesse do município <strong>${muni.nome}</strong>.</p>`,
+        `<p><a href="${linkAssinatura}" target="_blank" rel="noopener noreferrer">Clique aqui para assinar o documento</a></p>`,
+        `<p>Se o botão não abrir, copie e cole o link abaixo no navegador:</p>`,
+        `<p style="word-break:break-all;"><code>${linkAssinatura}</code></p>`,
+        `<hr/>`,
+        `<p><strong>Documento para assinatura:</strong></p>`,
+        corpoDocumento || `<p><em>Documento não informado no momento do disparo.</em></p>`,
+      ].join("");
+
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/assinaturas/disparar`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            to: muni.email,
+            subject,
+            html,
+            municipio: muni.nome,
+          }),
+        });
+
+        const raw = await res.text();
+        const data = raw ? JSON.parse(raw) : {};
+
+        if (!res.ok) {
+          return { ok: false, reason: data.error || `falha no envio (${res.status})` };
+        }
+
+        if (data.sent) {
+          return { ok: true, delivery: "smtp" };
+        }
+
+        return { ok: false, reason: data.reason || "SMTP não configurado" };
+      } catch (err) {
+        return { ok: false, reason: `erro de rede/API: ${String(err.message || err)}` };
+      }
+    },
+    [docHtml]
+  );
+
+  const enviarLoteAssinatura = useCallback(
+    async (listaMunicipios) => {
+      const idsPorEmail = new Map();
+      const municipiosValidos = [];
+      const itens = [];
+      const falhas = [];
+
+      for (const muni of listaMunicipios) {
+        const email = String(muni.email || "").trim().toLowerCase();
+        if (!email || !EMAIL_INSTITUCIONAL_RE.test(email)) {
+          falhas.push({ nome: muni.nome, reason: "e-mail inválido" });
+          continue;
+        }
+
+        const linkAssinatura = buildAssinaturaLink(muni.token);
+        itens.push({
+          to: email,
+          municipio: muni.nome,
+          linkAssinatura,
+        });
+        idsPorEmail.set(email, muni.id);
+        municipiosValidos.push(muni);
+      }
+
+      if (itens.length === 0) {
+        return { enviados: [], falhas };
+      }
+
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/assinaturas/disparar-lote`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            documentoHtml: (docHtml || "").trim().slice(0, 20000),
+            itens,
+          }),
+        });
+
+        const raw = await res.text();
+        const data = raw ? JSON.parse(raw) : {};
+
+        if (!res.ok) {
+          return {
+            enviados: [],
+            falhas: [...falhas, { nome: "lote", reason: data.error || `falha no disparo (${res.status})` }],
+          };
+        }
+
+        const enviados = (data.enviados || [])
+          .map((entry) => idsPorEmail.get(String(entry.to || "").trim().toLowerCase()))
+          .filter((id) => Number.isFinite(id));
+
+        const falhasApi = (data.falhas || []).map((entry) => ({
+          nome: entry.municipio || entry.to || "município",
+          reason: entry.reason || "falha",
+        }));
+
+        return { enviados, falhas: [...falhas, ...falhasApi] };
+      } catch (err) {
+        const enviadosFallback = [];
+        const falhasFallback = [...falhas];
+
+        for (const muni of municipiosValidos) {
+          const linkAssinatura = buildAssinaturaLink(muni.token);
+          const result = await enviarEmailAssinaturaApi(muni, linkAssinatura);
+          if (result.ok) {
+            enviadosFallback.push(muni.id);
+          } else {
+            falhasFallback.push({ nome: muni.nome, reason: result.reason || "falha" });
+          }
+        }
+
+        if (enviadosFallback.length > 0) {
+          return { enviados: enviadosFallback, falhas: falhasFallback };
+        }
+
+        return {
+          enviados: [],
+          falhas: [
+            ...falhasFallback,
+            { nome: "lote", reason: `erro de rede/API: ${String(err.message || err)}` },
+          ],
+        };
+      }
+    },
+    [docHtml, enviarEmailAssinaturaApi]
+  );
+
+  const enviarUm = async (id) => {
     if (!podeEnviarLinks) {
       showToast("⚠️ Avance o fluxo para a etapa de Envio antes de disparar links");
       return;
     }
+
+    const muni = municipios.find((m) => m.id === id);
+    if (!muni) {
+      showToast("⚠️ Município não encontrado");
+      return;
+    }
+
+    const linkAssinatura = buildAssinaturaLink(muni.token);
+    const result = await enviarEmailAssinaturaApi(muni, linkAssinatura);
+
+    if (!result.ok) {
+      showToast(`❌ Falha ao enviar e-mail para ${muni.nome}: ${result.reason || "falha"}`);
+      registrarAuditoria("envio.individual.falha", `${muni.nome} (${result.reason || "falha"})`);
+      return;
+    }
+
     setMunicipios((prev) =>
       prev.map((m) => (m.id === id ? { ...m, status: "enviado" } : m))
     );
-    const nome = municipios.find((m) => m.id === id)?.nome;
-    registrarAuditoria("envio.individual", nome || `ID ${id}`);
-    showToast(`📨 Enviado para ${nome}`);
+    registrarAuditoria("envio.individual", muni.nome || `ID ${id}`);
+    showToast(`📨 Link de assinatura preparado para ${muni.nome}`);
   };
 
-  const enviarTodos = () => {
+  const enviarTodos = async () => {
     if (!podeEnviarLinks) {
       showToast("⚠️ Avance o fluxo para a etapa de Envio antes de disparar links");
       return;
     }
+
     setModal(null);
-    let i = 0;
-    const interval = setInterval(() => {
-      if (i >= municipios.length) {
-        clearInterval(interval);
-        registrarAuditoria("envio.total", `${municipios.length} município(s)`);
-        showToast("✅ Todos os links foram enviados!");
-        return;
-      }
+
+    const { enviados, falhas } = await enviarLoteAssinatura(municipios);
+    if (enviados.length > 0) {
+      const sentSet = new Set(enviados);
       setMunicipios((prev) =>
-        prev.map((m, idx) => (idx === i ? { ...m, status: "enviado" } : m))
+        prev.map((m) => (sentSet.has(m.id) ? { ...m, status: "enviado" } : m))
       );
-      i++;
-    }, 55);
+    }
+
+    registrarAuditoria("envio.total", `${enviados.length}/${municipios.length} município(s)`);
+    if (falhas.length > 0) {
+      const firstReason = falhas[0]?.reason ? ` (${falhas[0].reason})` : "";
+      showToast(`⚠️ Disparo parcial: ${enviados.length}/${municipios.length} enviado(s). Falhas: ${falhas.length}${firstReason}`);
+    } else {
+      showToast(`✅ Disparo concluído: ${enviados.length}/${municipios.length} e-mail(s) enviados`);
+    }
   };
 
   const handleSign = (muniId, sigData) => {
@@ -2413,6 +2824,8 @@ export default function App() {
               status: "assinado",
               signedAt: sigData.at,
               geo: { lat: sigData.lat, lon: sigData.lon },
+              ip: sigData.ip || null,
+              device: sigData.device || null,
               hash: sigData.hash,
             }
           : m
@@ -2428,7 +2841,7 @@ export default function App() {
   };
 
   const copyLink = (muni) => {
-    const url = `https://manifestacao.seudominio.com.br/assinar/${muni.token}`;
+    const url = buildAssinaturaLink(muni.token);
     navigator.clipboard?.writeText(url);
     registrarAuditoria("link.copiado", muni.nome);
     showToast(`🔗 Link copiado: ${muni.nome}`);
@@ -2559,7 +2972,7 @@ export default function App() {
       pdf.setFont("times", "normal");
       pdf.setFontSize(11);
       const coverIntro = pdf.splitTextToSize(
-        "Este relatório consolida as assinaturas eletrônicas recebidas, incluindo evidências de data/hora, geolocalização, hash de validação e QR Code para conferência.",
+        "Este relatório consolida as assinaturas eletrônicas recebidas, incluindo evidências de data/hora, geolocalização, IP, aparelho, hash de validação e QR Code para conferência.",
         pageW - marginX * 2
       );
       coverIntro.forEach((line) => {
@@ -2586,6 +2999,20 @@ export default function App() {
         y += 15;
         pdf.text(`Geolocalização: ${m.geo?.lat?.toFixed(6)}, ${m.geo?.lon?.toFixed(6)}`, marginX, y);
         y += 15;
+        pdf.text(`IP: ${m.ip || "Não disponível"}`, marginX, y);
+        y += 15;
+        const aparelhoLines = pdf.splitTextToSize(`Aparelho: ${m.device || "Não disponível"}`, pageW - marginX * 2);
+        aparelhoLines.forEach((line) => {
+          if (y > pageH - footerH - 44) {
+            pdf.addPage();
+            addTimbrado();
+            y = headerH + 56;
+            pdf.setFont("helvetica", "normal");
+            pdf.setFontSize(11);
+          }
+          pdf.text(line, marginX, y);
+          y += 14;
+        });
         pdf.text(`Hash: ${m.hash || "-"}`, marginX, y);
         y += 22;
 
@@ -2611,7 +3038,7 @@ export default function App() {
         pdf.text("DOCUMENTO ASSINADO ELETRONICAMENTE", marginX + 10, y + 21);
         pdf.setFont("helvetica", "normal");
         pdf.setTextColor(40, 40, 40);
-        pdf.text("Registro com data, hora, geolocalização e hash de validação.", marginX + 10, y + 39);
+        pdf.text("Registro com data, hora, geolocalização, IP, aparelho e hash de validação.", marginX + 10, y + 39);
 
         const qrText = `https://manifestacao.seudominio.com.br/validar?hash=${encodeURIComponent(m.hash || "")}`;
         const qrDataUrl = await QRCode.toDataURL(qrText, { margin: 1, width: 96 });
@@ -2715,6 +3142,21 @@ export default function App() {
       y += 15;
       pdf.text(`Geolocalização: ${muni.geo?.lat?.toFixed(6)}, ${muni.geo?.lon?.toFixed(6)}`, marginX, y);
       y += 15;
+      pdf.text(`IP: ${muni.ip || "Não disponível"}`, marginX, y);
+      y += 15;
+      const aparelhoLines = pdf.splitTextToSize(`Aparelho: ${muni.device || "Não disponível"}`, pageW - marginX * 2);
+      aparelhoLines.forEach((line) => {
+        if (y > pageH - footerH - 44) {
+          pdf.addPage();
+          pdf.addImage(headerDataUrl, "PNG", marginX, 18, headerW, headerH);
+          pdf.addImage(footerDataUrl, "PNG", marginX, pageH - footerH - 18, footerW, footerH);
+          y = headerH + 56;
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(11);
+        }
+        pdf.text(line, marginX, y);
+        y += 14;
+      });
       pdf.text(`Hash: ${muni.hash || "-"}`, marginX, y);
       y += 22;
 
@@ -2791,6 +3233,82 @@ export default function App() {
     { id: "contratos",   label: "📑 Contratos Assinados" },
     { id: "registro",   label: "📋 Registro" },
   ];
+
+  if (assinaturaPublicaAtiva) {
+    const municipioPublico = municipios.find((m) => m.token === assinaturaTokenUrl) || null;
+    const signDataPublico = municipioPublico
+      ? signs[municipioPublico.id] || (municipioPublico.status === "assinado"
+        ? {
+            nome: "Representante Municipal",
+            cargo: "Prefeito(a) Municipal",
+            at: municipioPublico.signedAt,
+            lat: municipioPublico.geo?.lat,
+            lon: municipioPublico.geo?.lon,
+            ip: municipioPublico.ip,
+            device: municipioPublico.device,
+            hash: municipioPublico.hash,
+          }
+        : null)
+      : null;
+
+    return (
+      <div style={{ ...S.app, maxWidth: 820 }}>
+        <div style={S.header}>
+          <div style={S.logo}>✍</div>
+          <div>
+            <div style={{ fontSize: 17, fontWeight: 500 }}>Assinatura de Manifestação Municipal</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
+              Ambiente público de assinatura
+            </div>
+          </div>
+        </div>
+
+        <div style={S.card}>
+          {!municipioPublico && (
+            <div style={{ fontSize: 13, color: "var(--color-text-danger)" }}>
+              ❌ Link de assinatura inválido ou expirado.
+            </div>
+          )}
+
+          {municipioPublico && assinaturaPublicaProcessando && (
+            <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+              ⏳ Processando assinatura eletrônica para {municipioPublico.nome}...
+            </div>
+          )}
+
+          {municipioPublico && !assinaturaPublicaProcessando && municipioPublico.status === "assinado" && signDataPublico && (
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-success)", marginBottom: 8 }}>
+                ✅ Documento assinado com sucesso
+              </div>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8, marginBottom: 12 }}>
+                Município: <strong style={{ color: "var(--color-text-primary)" }}>{municipioPublico.nome}</strong><br />
+                Assinado em: {new Date(signDataPublico.at).toLocaleString("pt-BR")}<br />
+                Hash: <span style={{ fontFamily: "monospace" }}>{signDataPublico.hash}</span>
+              </div>
+              <button
+                style={S.btnPrimary}
+                onClick={() => exportarContratoIndividualPdf(municipioPublico)}
+                disabled={exportandoPdf}
+              >
+                {exportandoPdf ? "⏳ Gerando PDF..." : "📥 Baixar contrato assinado (PDF)"}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {municipioPublico && signDataPublico && (
+          <DocPreview
+            municipio={municipioPublico.nome}
+            docHtml={docHtml}
+            signData={signDataPublico}
+          />
+        )}
+
+        {toast && <div style={S.toast}>{toast}</div>}
+      </div>
+    );
+  }
 
   return (
     <div style={S.app}>
@@ -3384,6 +3902,9 @@ export default function App() {
                 <button style={S.btn} onClick={abrirModalCamposLicitacao}>
                   🧩 Preencher campos automáticos
                 </button>
+                <button style={S.btnPrimary} onClick={abrirModalVincularPrefeituras}>
+                  🏛 Vincular prefeituras e disparar assinatura
+                </button>
                   <button
                     style={S.btn}
                     onClick={() => {
@@ -3918,7 +4439,11 @@ export default function App() {
                       }}>
                         <span>📅 {new Date(m.signedAt).toLocaleString("pt-BR")}</span>
                         <span>📍 {m.geo?.lat?.toFixed(5)}, {m.geo?.lon?.toFixed(5)}</span>
+                        <span>🌐 {m.ip || "Não disponível"}</span>
                         <span style={{ fontFamily: "monospace" }}>🔐 {m.hash}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 4, wordBreak: "break-all" }}>
+                        💻 {m.device || "Aparelho não identificado"}
                       </div>
                       <div style={{ marginTop: 8 }}>
                         <button
@@ -3994,6 +4519,114 @@ export default function App() {
                 onClick={limparRascunhoCamposLicitacao}
               >
                 🧹 Limpar rascunho
+              </button>
+              <button
+                style={{ ...S.btn, flex: 1, justifyContent: "center" }}
+                onClick={() => setModal(null)}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal === "vincular-prefeituras" && (
+        <div style={S.modalOverlay} onClick={() => setModal(null)}>
+          <div
+            style={{ ...S.modal, maxWidth: 760, maxHeight: "85vh", overflowY: "auto" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>
+              🏛 Vincular prefeituras e e-mails para assinatura
+            </div>
+            <p style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 0 }}>
+              Selecione as prefeituras que receberão o link de assinatura deste documento por e-mail.
+            </p>
+
+            <input
+              style={{ ...S.input, marginBottom: 10 }}
+              placeholder="Buscar prefeitura por nome ou e-mail..."
+              value={editorVinculosBusca}
+              onChange={(e) => setEditorVinculosBusca(e.target.value)}
+            />
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <button
+                style={S.btnSm}
+                onClick={() => setEditorVinculosSelecionados(municipios.map((m) => m.id))}
+              >
+                Marcar todas
+              </button>
+              <button
+                style={S.btnSm}
+                onClick={() => setEditorVinculosSelecionados([])}
+              >
+                Limpar seleção
+              </button>
+              <div style={{ marginLeft: "auto", fontSize: 12, color: "var(--color-text-secondary)" }}>
+                {editorVinculosSelecionados.length} selecionada(s)
+              </div>
+            </div>
+
+            <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, maxHeight: 300, overflowY: "auto", marginBottom: 12 }}>
+              {municipios
+                .filter((m) => {
+                  const termo = editorVinculosBusca.trim().toLowerCase();
+                  if (!termo) return true;
+                  return `${m.nome} ${m.email}`.toLowerCase().includes(termo);
+                })
+                .map((m) => {
+                const isSelected = editorVinculosSelecionados.includes(m.id);
+                const emailValido = EMAIL_INSTITUCIONAL_RE.test(String(m.email || "").trim().toLowerCase());
+                return (
+                  <label
+                    key={m.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "22px 1fr auto",
+                      gap: 8,
+                      alignItems: "center",
+                      padding: "7px 10px",
+                      borderBottom: "0.5px solid var(--color-border-tertiary)",
+                      cursor: "pointer",
+                      opacity: emailValido ? 1 : 0.65,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => alternarVinculoPrefeitura(m.id)}
+                    />
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 500 }}>{m.nome}</div>
+                      <div style={{ fontSize: 11, color: emailValido ? "var(--color-text-secondary)" : "var(--color-text-danger)" }}>
+                        {m.email || "Sem e-mail"}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                      {emailValido ? "email ok" : "email inválido"}
+                    </div>
+                  </label>
+                );
+              })}
+              {municipios.filter((m) => {
+                const termo = editorVinculosBusca.trim().toLowerCase();
+                if (!termo) return true;
+                return `${m.nome} ${m.email}`.toLowerCase().includes(termo);
+              }).length === 0 && (
+                <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--color-text-secondary)" }}>
+                  Nenhuma prefeitura encontrada para o filtro informado.
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                style={{ ...S.btnPrimary, flex: 1, justifyContent: "center" }}
+                onClick={dispararAssinaturaPeloEditor}
+              >
+                🚀 Disparar e-mails de assinatura
               </button>
               <button
                 style={{ ...S.btn, flex: 1, justifyContent: "center" }}

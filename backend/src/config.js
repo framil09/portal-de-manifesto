@@ -1,4 +1,17 @@
 import path from "node:path";
+import fs from "node:fs";
+import dotenv from "dotenv";
+
+const envCandidates = [
+  path.resolve(process.cwd(), ".env"),
+  path.resolve(process.cwd(), "../.env"),
+];
+
+for (const file of envCandidates) {
+  if (fs.existsSync(file)) {
+    dotenv.config({ path: file, override: false });
+  }
+}
 
 const rootDir = path.resolve(process.cwd(), "backend");
 
@@ -28,6 +41,11 @@ export const config = {
   smtpUser: process.env.SMTP_USER || "",
   smtpPass: process.env.SMTP_PASS || "",
   smtpFrom: process.env.SMTP_FROM || "nao-responda@consorcio.mg.gov.br",
+  emailProvider: String(process.env.EMAIL_PROVIDER || "auto").toLowerCase(),
+  resendApiKey: process.env.RESEND_API_KEY || "",
+  resendFrom: process.env.RESEND_FROM || process.env.SMTP_FROM || "nao-responda@consorcio.mg.gov.br",
+  brevoApiKey: process.env.BREVO_API_KEY || "",
+  brevoFrom: process.env.BREVO_FROM || process.env.SMTP_FROM || "nao-responda@consorcio.mg.gov.br",
   corsOrigins: parseCorsOrigins(process.env.CORS_ORIGINS || process.env.APP_BASE_URL || "http://localhost:3000"),
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || "",
   cookieSecret: process.env.COOKIE_SECRET || "change-me-cookie-secret",

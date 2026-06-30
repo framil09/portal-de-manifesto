@@ -19,6 +19,19 @@ async function ensureSeedData() {
   }
 }
 
+async function ensureMunicipiosColumns() {
+  const columns = await db.all("PRAGMA table_info(municipios)");
+  const names = new Set(columns.map((col) => col.name));
+
+  if (!names.has("signer_ip")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN signer_ip TEXT");
+  }
+
+  if (!names.has("device_info")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN device_info TEXT");
+  }
+}
+
 export async function initDb() {
   const dir = path.dirname(config.dbFile);
   fs.mkdirSync(dir, { recursive: true });
@@ -79,6 +92,8 @@ export async function initDb() {
       signed_at TEXT,
       geo_lat REAL,
       geo_lon REAL,
+      signer_ip TEXT,
+      device_info TEXT,
       hash TEXT
     );
 
@@ -125,6 +140,8 @@ export async function initDb() {
       SELECT RAISE(ABORT, 'audit_logs is immutable');
     END;
   `);
+
+  await ensureMunicipiosColumns();
 
   await ensureSeedData();
   return db;
