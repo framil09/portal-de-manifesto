@@ -358,7 +358,31 @@ const MUNICIPIOS_STORAGE_KEY = "manifestacao.municipios.v1";
 const AUDITORIA_STORAGE_KEY  = "manifestacao.auditoria.v1";
 const CONSORCIO_STORAGE_KEY  = "manifestacao.consorcio.v1";
 const DOC_STORAGE_KEY        = "manifestacao.docHtml.v1";
+const SESSION_TOKEN_KEY      = "manifestacao.apiToken";
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:4000";
+
+const maskCnpj = (v) => {
+  const d = v.replace(/\D/g, "").slice(0, 14);
+  return d
+    .replace(/^(\d{2})(\d)/, "$1.$2")
+    .replace(/^(\d{2})\.(\d{3})(\d)/, "$1.$2.$3")
+    .replace(/\.(\d{3})(\d)/, ".$1/$2")
+    .replace(/(\d{4})(\d)/, "$1-$2");
+};
+
+const AUDIT_LABELS = {
+  "fluxo.etapa":                  "Etapa do fluxo alterada",
+  "municipio.excluido":           "Município excluído",
+  "municipio.adicionado":         "Município adicionado",
+  "municipio.editado":            "Município editado",
+  "municipio.status.massa":       "Status alterado em massa",
+  "municipio.assinado":           "Município assinou",
+  "municipio.enviado":            "Link de assinatura enviado",
+  "municipio.enviados.todos":     "Links enviados para todos",
+  "municipio.enviados.selecionados": "Links enviados (selecionados)",
+  "municipio.importado":          "Importação de lista",
+  "api.municipios.sincronizado":  "Sincronizado com API",
+};
 
 function buildAssinaturaLink(token) {
   const origin = window.location.origin;
@@ -615,8 +639,7 @@ const S = {
   },
   tabBar: {
     display: "flex", gap: 2,
-    borderBottom: "0.5px solid var(--color-border-tertiary)",
-    marginBottom: "1.5rem", overflowX: "auto",
+    overflowX: "auto", flex: 1,
     scrollbarWidth: "none", msOverflowStyle: "none",
   },
   tab: (active) => ({
@@ -753,6 +776,7 @@ function TBtn({ cmd, val, label, title }) {
 // ─── EDITOR RICH TEXT ─────────────────────────────────────────────────────────
 function RichEditor({ value, onChange, placeholder }) {
   const ref = useRef(null);
+  const [wordCount, setWordCount] = useState(0);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -764,6 +788,9 @@ function RichEditor({ value, onChange, placeholder }) {
 
   const handleInput = () => {
     if (onChange) onChange(ref.current.innerHTML);
+    const text = ref.current.innerText || "";
+    const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+    setWordCount(words);
   };
 
   const handlePaste = (e) => {
@@ -889,6 +916,9 @@ function RichEditor({ value, onChange, placeholder }) {
         style={S.editorArea}
         data-placeholder={placeholder}
       />
+      <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", textAlign: "right", padding: "4px 8px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+        {wordCount} {wordCount === 1 ? "palavra" : "palavras"}
+      </div>
     </div>
   );
 }
@@ -1166,151 +1196,6 @@ function PainelAssinatura({ municipio, onSign, totalMunicipios = 0 }) {
   );
 }
 
-// ─── ASSISTENTE IA ────────────────────────────────────────────────────────────
-function AIAssistant({ docContext, apiToken }) {
-  const [msgs, setMsgs] = useState([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const bottomRef = useRef(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [msgs, loading]);
-
-  const send = async (texto) => {
-    const userMsg = (texto || input).trim();
-    if (!userMsg || loading) return;
-    setInput("");
-    setMsgs((m) => [...m, { role: "user", content: userMsg }]);
-    setLoading(true);
-
-    try {
-      if (!apiToken) {
-        setMsgs((m) => [
-          ...m,
-          {
-            role: "assistant",
-            content:
-              "⚠️ Faça login na API para usar o assistente de IA com segurança.",
-          },
-        ]);
-        setLoading(false);
-        return;
-      }
-
-      const history = msgs.map((m) => ({ role: m.role, content: m.content }));
-      const res = await fetch(`${API_BASE_URL}/api/ai/redigir`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          Authorization: `Bearer ${apiToken}`,
-        },
-        body: JSON.stringify({
-          input: userMsg,
-          docContext: docContext?.slice(0, 1200) || "",
-          history,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Falha ao consultar IA");
-      const text = data.text || "Sem resposta.";
-      setMsgs((m) => [...m, { role: "assistant", content: text }]);
-    } catch (err) {
-      setMsgs((m) => [
-        ...m,
-        { role: "assistant", content: `Erro: ${err.message}` },
-      ]);
-    }
-    setLoading(false);
-  };
-
-  const sugestoes = [
-    "Redija um parágrafo de abertura formal para manifestação de interesse",
-    "Crie uma cláusula de prazo e vigência de 90 dias",
-    "Sugira texto para justificativa do interesse do consórcio",
-    "Como estruturar o objeto da parceria com o município?",
-    "Escreva um parágrafo de encerramento formal com saudações",
-    "Crie uma cláusula de confidencialidade",
-  ];
-
-  return (
-    <div style={S.card}>
-      <div style={S.sectionTitle}>🤖 Assistente de redação (IA)</div>
-      <div style={{ minHeight: 200, maxHeight: 340, overflowY: "auto", marginBottom: 10 }}>
-        {msgs.length === 0 ? (
-          <div>
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 10 }}>
-              Peça ajuda para redigir ou melhorar o documento. Sugestões rápidas:
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-              {sugestoes.map((s, i) => (
-                <button
-                  key={i}
-                  onClick={() => send(s)}
-                  style={{
-                    ...S.btn, fontSize: 11, textAlign: "left",
-                    padding: "6px 10px", display: "block",
-                  }}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          msgs.map((m, i) => (
-            <div
-              key={i}
-              style={{
-                marginBottom: 10,
-                display: "flex",
-                justifyContent: m.role === "user" ? "flex-end" : "flex-start",
-              }}
-            >
-              <div
-                style={{
-                  maxWidth: "85%", padding: "8px 12px",
-                  borderRadius: 10, fontSize: 12, lineHeight: 1.7,
-                  whiteSpace: "pre-wrap",
-                  background:
-                    m.role === "user"
-                      ? "var(--color-text-primary)"
-                      : "var(--color-background-secondary)",
-                  color:
-                    m.role === "user"
-                      ? "var(--color-background-primary)"
-                      : "var(--color-text-primary)",
-                }}
-              >
-                {m.content}
-              </div>
-            </div>
-          ))
-        )}
-        {loading && (
-          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", padding: "4px 0" }}>
-            ✍ Redigindo...
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-      <div style={{ display: "flex", gap: 6 }}>
-        <input
-          style={{ ...S.input, flex: 1 }}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Peça ajuda para redigir o documento... (Enter para enviar)"
-        />
-        <button style={S.btnPrimary} onClick={() => send()} disabled={loading}>
-          Enviar
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ─── APP PRINCIPAL ────────────────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("editor");
@@ -1348,7 +1233,7 @@ export default function App() {
   const [etapaFluxo, setEtapaFluxo] = useState("rascunho");
   const [auditoria, setAuditoria] = useState([]);
   const [apiStatus, setApiStatus] = useState("checking");
-  const [apiToken, setApiToken] = useState("");
+  const [apiToken, setApiToken] = useState(() => sessionStorage.getItem(SESSION_TOKEN_KEY) || "");
   const [apiUser, setApiUser] = useState(null);
   const [apiAuth, setApiAuth] = useState({ email: "admin@consorcio.mg.gov.br", password: "" });
   const [apiDashboard, setApiDashboard] = useState(null);
@@ -1396,6 +1281,13 @@ export default function App() {
   const [assinaturaPublicaOtpValidating, setAssinaturaPublicaOtpValidating] = useState(false);
   const assinaturaCanvasRef = useRef(null);
   const assinaturaCanvasDrawingRef = useRef(false);
+  const tabBarRef = useRef(null);
+
+  // ── Persistência do token de API na sessão ───────────────────────────────
+  useEffect(() => {
+    if (apiToken) sessionStorage.setItem(SESSION_TOKEN_KEY, apiToken);
+    else sessionStorage.removeItem(SESSION_TOKEN_KEY);
+  }, [apiToken]);
 
   useEffect(() => {
     try {
@@ -3811,8 +3703,18 @@ export default function App() {
       </div>
 
       {/* Barra de progresso */}
-      <div style={S.progress}>
-        <div style={S.progressFill(pct)} />
+      <div style={{ marginBottom: "1.25rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
+            {stats.assinados} de {totalMunicipios} municípios assinaram
+          </span>
+          <span style={{ fontSize: 11, fontWeight: 500, color: pct > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>
+            {pct}%
+          </span>
+        </div>
+        <div style={S.progress}>
+          <div style={S.progressFill(pct)} />
+        </div>
       </div>
 
       <div style={{ ...S.card, marginBottom: 14 }}>
@@ -3846,7 +3748,7 @@ export default function App() {
                   color: active ? "var(--color-text-info)" : done ? "var(--color-text-success)" : "var(--color-text-secondary)",
                 }}
               >
-                {done ? "✅" : active ? "📍" : "•"} {etapa.label}
+                {done ? `✓ ${idx + 1}.` : active ? `► ${idx + 1}.` : `${idx + 1}.`} {etapa.label}
               </button>
             );
           })}
@@ -3854,12 +3756,24 @@ export default function App() {
       </div>
 
       {/* Abas */}
-      <div style={S.tabBar}>
-        {TABS.map((t) => (
-          <button key={t.id} style={S.tab(tab === t.id)} onClick={() => setTab(t.id)}>
-            {t.label}
-          </button>
-        ))}
+      <div style={{ position: "relative", display: "flex", alignItems: "stretch", marginBottom: "1.5rem", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+        <button
+          aria-label="Rolar abas para esquerda"
+          onClick={() => tabBarRef.current?.scrollBy({ left: -160, behavior: "smooth" })}
+          style={{ flexShrink: 0, border: "none", background: "var(--color-background-primary)", color: "var(--color-text-secondary)", cursor: "pointer", padding: "0 6px", fontSize: 14 }}
+        >‹</button>
+        <div ref={tabBarRef} style={S.tabBar}>
+          {TABS.map((t) => (
+            <button key={t.id} style={S.tab(tab === t.id)} onClick={() => setTab(t.id)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <button
+          aria-label="Rolar abas para direita"
+          onClick={() => tabBarRef.current?.scrollBy({ left: 160, behavior: "smooth" })}
+          style={{ flexShrink: 0, border: "none", background: "var(--color-background-primary)", color: "var(--color-text-secondary)", cursor: "pointer", padding: "0 6px", fontSize: 14 }}
+        >›</button>
       </div>
 
       {/* ── ABA: PAINEL ── */}
@@ -3904,19 +3818,25 @@ export default function App() {
               </div>
             )}
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8 }}>
-              <input
-                style={S.input}
-                type="date"
-                value={apiDashboardFilters.from}
-                onChange={(e) => setApiDashboardFilters((prev) => ({ ...prev, from: e.target.value }))}
-              />
-              <input
-                style={S.input}
-                type="date"
-                value={apiDashboardFilters.to}
-                onChange={(e) => setApiDashboardFilters((prev) => ({ ...prev, to: e.target.value }))}
-              />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, alignItems: "center" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <label style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>De:</label>
+                <input
+                  style={S.input}
+                  type="date"
+                  value={apiDashboardFilters.from}
+                  onChange={(e) => setApiDashboardFilters((prev) => ({ ...prev, from: e.target.value }))}
+                />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <label style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>Até:</label>
+                <input
+                  style={S.input}
+                  type="date"
+                  value={apiDashboardFilters.to}
+                  onChange={(e) => setApiDashboardFilters((prev) => ({ ...prev, to: e.target.value }))}
+                />
+              </div>
               <input
                 style={S.input}
                 placeholder="Secretaria"
@@ -4323,9 +4243,11 @@ export default function App() {
                   style={S.input}
                   placeholder={ph}
                   value={consorcio[k]}
-                  onChange={(e) =>
-                    setConsorcio((p) => ({ ...p, [k]: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    const val = k === "cnpj" ? maskCnpj(raw) : raw;
+                    setConsorcio((p) => ({ ...p, [k]: val }));
+                  }}
                 />
               ))}
             </div>
@@ -4395,6 +4317,17 @@ export default function App() {
                   >
                     ⚖️ Ajustar linguagem formal
                   </button>
+                  <button
+                    style={{ ...S.btn, color: "var(--color-text-danger)", borderColor: "var(--color-border-danger)" }}
+                    onClick={() => {
+                      if (window.confirm("Limpar o documento? Esta ação não pode ser desfeita.")) {
+                        setDocHtml("");
+                        showToast("🗑️ Documento limpo");
+                      }
+                    }}
+                  >
+                    🗑️ Limpar
+                  </button>
                   <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
                     📋 Cole direto do Word e clique em Melhorar
                   </div>
@@ -4406,8 +4339,6 @@ export default function App() {
               placeholder="Cole aqui o texto criado no Word, ou redija diretamente. Use a barra de ferramentas acima para formatar. O botão '✍ Campo de assinatura' insere o bloco de assinatura digital no lugar certo do documento."
             />
           </div>
-
-          <AIAssistant docContext={docHtml?.replace(/<[^>]+>/g, "")} apiToken={apiToken} />
         </div>
       )}
 
@@ -4625,7 +4556,7 @@ export default function App() {
                         : "Assinado"}
                     </span>
                   </div>
-                  <div style={{ display: "flex", gap: 3, justifyContent: "center", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 3, justifyContent: "center" }}>
                     <button
                       style={S.btnSm}
                       onClick={() => copyLink(m)}
@@ -4884,7 +4815,7 @@ export default function App() {
                     }}
                   >
                     <div style={{ color: "var(--color-text-secondary)" }}>{new Date(item.at).toLocaleString("pt-BR")}</div>
-                    <div style={{ fontWeight: 500 }}>{item.acao}</div>
+                    <div style={{ fontWeight: 500 }}>{AUDIT_LABELS[item.acao] || item.acao}</div>
                     <div>{item.detalhes}</div>
                   </div>
                 ))}
