@@ -114,7 +114,7 @@ function parsePeriod(query) {
 function defaultSignatureDocumentHtml() {
   return [
     `<p><strong>Assunto:</strong> Manifestação de interesse para celebração de parceria institucional.</p>`,
-    `<p>O Consórcio Intermunicipal manifesta interesse na formalização de parceria com este Município, para execução de ações conjuntas de interesse público, observando legalidade, impessoalidade, moralidade, publicidade e eficiência.</p>`,
+    `<p>O <strong>CIMAG – Consórcio Intermunicipal Multifinalitário da Microrregião do Circuito das Águas</strong> manifesta interesse na formalização de parceria com este Município, para execução de ações conjuntas de interesse público, observando legalidade, impessoalidade, moralidade, publicidade e eficiência.</p>`,
     `<h3>1. Objeto</h3>`,
     `<p>Estabelecer cooperação técnica e institucional para planejamento, execução e monitoramento de iniciativas de fortalecimento da gestão municipal.</p>`,
     `<h3>2. Justificativa</h3>`,
@@ -123,7 +123,7 @@ function defaultSignatureDocumentHtml() {
     `<p>Vigência inicial de 90 dias, contados da assinatura.</p>`,
     `<h3>4. Assinatura</h3>`,
     `<p>Ao clicar no link de assinatura, serão registrados data/hora, geolocalização, IP e dispositivo.</p>`,
-    `<p style="margin-top:20px">[Cidade], [data].</p>`,
+    `<p style="margin-top:20px">Caxambu/MG, ${new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" })}.</p>`,
   ].join("");
 }
 

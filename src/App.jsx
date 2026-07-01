@@ -228,7 +228,7 @@ function normalizeDocumentHtml(inputHtml) {
     .trim();
 }
 
-function buildManifestacaoTemplate(consorcioNome = "CONSÓRCIO INTERMUNICIPAL") {
+function buildManifestacaoTemplate(consorcioNome = "CIMAG") {
   return `
 <p><strong>Assunto:</strong> Manifestação de interesse para celebração de parceria institucional.</p>
 <p>O ${consorcioNome} vem, respeitosamente, por meio deste expediente, manifestar interesse na formalização de parceria com este Município, com vistas ao desenvolvimento de ações conjuntas de interesse público, em conformidade com os princípios da legalidade, impessoalidade, moralidade, publicidade e eficiência.</p>
@@ -249,7 +249,7 @@ function buildManifestacaoTemplate(consorcioNome = "CONSÓRCIO INTERMUNICIPAL") 
 `;
 }
 
-function buildLicitacaoTemplate(consorcioNome = "CONSÓRCIO INTERMUNICIPAL") {
+function buildLicitacaoTemplate(consorcioNome = "CIMAG") {
   return `
 <p><strong>Assunto:</strong> Manifestação formal de interesse para participação no [MODALIDADE] do processo [NÚMERO DO PROCESSO].</p>
 <p>O ${consorcioNome}, por meio de seu representante legal, manifesta formalmente interesse em compor solução administrativa conjunta com este Município, no âmbito do processo [NÚMERO DO PROCESSO], modalidade [MODALIDADE], observadas as disposições da Lei no 14.133/2021, regulamentações locais e demais normas aplicáveis.</p>
@@ -1206,7 +1206,13 @@ export default function App() {
   const [docHtml, setDocHtml] = useState("");
   const [docSavedAt, setDocSavedAt] = useState(null);
   const [consorcio, setConsorcio] = useState({
-    nome: "", sigla: "", cnpj: "", endereco: "", site: "", email: "", logo: "",
+    nome: "Consórcio Intermunicipal Multifinalitário da Microrregião do Circuito das Águas",
+    sigla: "CIMAG",
+    cnpj: "21.406.451/0001-01",
+    endereco: "Av. Camilo Soares, 100 - Caxambu/MG - CEP: 37440-000",
+    site: "www.cimag.org.br",
+    email: "secretaria@cimag.org.br",
+    logo: "",
   });
   const [toast, setToast] = useState(null);
   const [modal, setModal] = useState(null);
@@ -3492,7 +3498,7 @@ export default function App() {
           hash: assinaturaPublicaMeta.hash || null,
         }
       : null);
-    const documentoPublicoHtml = assinaturaPublicaDocHtml.trim() || (docHtml || "").trim() || buildManifestacaoTemplate(consorcio.nome || "CONSÓRCIO INTERMUNICIPAL");
+    const documentoPublicoHtml = assinaturaPublicaDocHtml.trim() || (docHtml || "").trim() || buildManifestacaoTemplate(consorcio.nome || "CIMAG");
     const signDataPublico = municipioPublico
       ? signs[municipioPublico.id] || (municipioPublico.status === "assinado"
         ? {
@@ -4271,7 +4277,7 @@ export default function App() {
                 <button
                   style={S.btn}
                   onClick={() => {
-                    const template = buildManifestacaoTemplate(consorcio.nome || "CONSÓRCIO INTERMUNICIPAL");
+                    const template = buildManifestacaoTemplate(consorcio.nome || "CIMAG");
                     setDocHtml(template);
                     showToast("🧾 Modelo oficial aplicado");
                   }}
@@ -4281,7 +4287,7 @@ export default function App() {
                 <button
                   style={S.btn}
                   onClick={() => {
-                    const template = buildLicitacaoTemplate(consorcio.nome || "CONSÓRCIO INTERMUNICIPAL");
+                    const template = buildLicitacaoTemplate(consorcio.nome || "CIMAG");
                     setDocHtml(template);
                     showToast("🏛 Modelo de licitação aplicado");
                   }}
