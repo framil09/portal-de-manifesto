@@ -111,8 +111,190 @@ function parsePeriod(query) {
   return { fromIso, toIso, invalid };
 }
 
+function defaultSignatureDocumentHtml() {
+  return [
+    `<p><strong>Assunto:</strong> Manifestação de interesse para celebração de parceria institucional.</p>`,
+    `<p>O Consórcio Intermunicipal manifesta interesse na formalização de parceria com este Município, para execução de ações conjuntas de interesse público, observando legalidade, impessoalidade, moralidade, publicidade e eficiência.</p>`,
+    `<h3>1. Objeto</h3>`,
+    `<p>Estabelecer cooperação técnica e institucional para planejamento, execução e monitoramento de iniciativas de fortalecimento da gestão municipal.</p>`,
+    `<h3>2. Justificativa</h3>`,
+    `<p>A proposta visa ampliar a capacidade de resposta do poder público local, com economicidade e integração regional.</p>`,
+    `<h3>3. Vigência</h3>`,
+    `<p>Vigência inicial de 90 dias, contados da assinatura.</p>`,
+    `<h3>4. Assinatura</h3>`,
+    `<p>Ao clicar no link de assinatura, serão registrados data/hora, geolocalização, IP e dispositivo.</p>`,
+    `<p style="margin-top:20px">[Cidade], [data].</p>`,
+  ].join("");
+}
+
+function computeDocumentHash(documentoHtml) {
+  return crypto.createHash("sha256").update(String(documentoHtml || "")).digest("hex");
+}
+
+function generateOtpCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function hashOtpCode(code, token) {
+  return crypto.createHmac("sha256", config.auditSecret).update(`${token}|${code}`).digest("hex");
+}
+
+function generateTsaToken({ token, documentHash, signedAt, tsaUtc, source }) {
+  return crypto
+    .createHmac("sha256", config.auditSecret)
+    .update([token, documentHash || "-", signedAt || "-", tsaUtc || "-", source || "-"].join("|"))
+    .digest("hex");
+}
+
+async function getTrustedTimestampUtc() {
+  const providers = [
+    {
+      source: "worldtimeapi",
+      url: "https://worldtimeapi.org/api/timezone/Etc/UTC",
+      read: (payload) => payload?.utc_datetime,
+    },
+    {
+      source: "timeapiio",
+      url: "https://timeapi.io/api/Time/current/zone?timeZone=UTC",
+      read: (payload) => payload?.dateTime,
+    },
+  ];
+
+  for (const provider of providers) {
+    try {
+      const res = await fetch(provider.url, { method: "GET" });
+      if (!res.ok) continue;
+      const payload = await res.json();
+      const raw = provider.read(payload);
+      if (!raw) continue;
+      const parsed = new Date(raw);
+      if (Number.isNaN(parsed.getTime())) continue;
+      return { utc: parsed.toISOString(), source: provider.source };
+    } catch {
+      // tenta próximo provedor
+    }
+  }
+
+  return { utc: new Date().toISOString(), source: "local-fallback" };
+}
+
+const TIMBRADO_HEADER_CID = "timbrado-header";
+const TIMBRADO_FOOTER_CID = "timbrado-footer";
+
+function resolveTimbradoFile(fileName) {
+  const candidates = [
+    path.resolve(process.cwd(), "public", "timbrado", fileName),
+    path.resolve(process.cwd(), "..", "public", "timbrado", fileName),
+    path.resolve(process.cwd(), "backend", "public", "timbrado", fileName),
+  ];
+  return candidates.find((filePath) => fs.existsSync(filePath)) || null;
+}
+
+function getTimbradoEmailAttachments() {
+  const headerPath = resolveTimbradoFile("header.png");
+  const footerPath = resolveTimbradoFile("footer.png");
+  const attachments = [];
+
+  if (headerPath) {
+    attachments.push({
+      filename: "header.png",
+      path: headerPath,
+      cid: TIMBRADO_HEADER_CID,
+    });
+  }
+
+  if (footerPath) {
+    attachments.push({
+      filename: "footer.png",
+      path: footerPath,
+      cid: TIMBRADO_FOOTER_CID,
+    });
+  }
+
+  return attachments;
+}
+
+function buildSignatureEmailHtml({ municipio, linkAssinatura, documentoHtml }) {
+  const headerSrc = `cid:${TIMBRADO_HEADER_CID}`;
+  const footerSrc = `cid:${TIMBRADO_FOOTER_CID}`;
+
+  const linkBlock = linkAssinatura
+    ? `
+      <div style="margin:16px 0 18px;padding:12px 14px;background:#f2f6fb;border:1px solid #d8e3ef;border-radius:8px;">
+        <p style="margin:0 0 8px;font-size:13px;color:#1f2937;"><strong>Ação necessária:</strong> clique no botão abaixo para assinar eletronicamente.</p>
+        <p style="margin:0;"><a href="${linkAssinatura}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:10px 14px;border-radius:6px;background:#0f4c81;color:#ffffff;text-decoration:none;font-weight:600;">Assinar documento</a></p>
+      </div>
+    `
+    : "";
+
+  return `
+    <div style="font-family:Segoe UI, Arial, sans-serif;background:#eef3f9;padding:20px;color:#1f2937;">
+      <div style="max-width:860px;margin:0 auto;background:#ffffff;border:1px solid #d8e3ef;border-radius:10px;overflow:hidden;">
+        <div style="padding:0;background:#ffffff;border-bottom:1px solid #e5edf5;">
+          <img src="${headerSrc}" alt="Timbrado institucional" style="display:block;width:100%;max-height:130px;object-fit:cover;"/>
+        </div>
+
+        <div style="padding:22px 24px 16px;line-height:1.6;">
+          <h2 style="margin:0 0 10px;font-size:20px;color:#0f4c81;">Manifestação de Interesse para Assinatura</h2>
+          <p style="margin:0 0 8px;">Prezado(a),</p>
+          <p style="margin:0 0 8px;">Este e-mail contém o documento completo para análise e assinatura eletrônica.</p>
+          <p style="margin:0 0 6px;"><strong>Município:</strong> ${municipio}</p>
+          <p style="margin:0 0 4px;"><strong>Emissão:</strong> ${new Date().toLocaleString("pt-BR")}</p>
+          ${linkBlock}
+
+          <div style="margin-top:16px;padding:16px;border:1px solid #d8e3ef;border-radius:8px;background:#fcfdff;">
+            <p style="margin:0 0 10px;font-size:13px;color:#4b5563;"><strong>Documento na íntegra</strong></p>
+            ${documentoHtml}
+          </div>
+        </div>
+
+        <div style="padding:0;border-top:1px solid #e5edf5;background:#ffffff;">
+          <img src="${footerSrc}" alt="Rodapé institucional" style="display:block;width:100%;max-height:95px;object-fit:cover;"/>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function extractTokenFromSignatureLink(link) {
+  if (!link || typeof link !== "string") return null;
+  try {
+    const parsed = new URL(link);
+    const hash = String(parsed.hash || "");
+    const hashMatch = hash.match(/^#\/assinar\/([^/?#]+)/i);
+    if (hashMatch?.[1]) return decodeURIComponent(hashMatch[1]);
+    const pathMatch = String(parsed.pathname || "").match(/\/assinar\/([^/?#]+)/i);
+    if (pathMatch?.[1]) return decodeURIComponent(pathMatch[1]);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function loginAttemptKey(ip, email) {
   return `${ip || "-"}|${(email || "").toLowerCase().trim()}`;
+}
+
+function getRequestIp(req) {
+  const forwardedFor = req.headers["x-forwarded-for"];
+  const forwardedIp =
+    typeof forwardedFor === "string" && forwardedFor.trim()
+      ? forwardedFor.split(",")[0].trim()
+      : null;
+  return forwardedIp || req.ip || req.socket?.remoteAddress || null;
+}
+
+function getRequestDevice(req, clientDevice) {
+  const userAgent = String(req.headers["user-agent"] || "").trim();
+  const normalizedClientDevice = String(clientDevice || "").trim();
+  return [normalizedClientDevice, userAgent].filter(Boolean).join(" | ") || null;
+}
+
+function buildSignatureHash({ token, signedAt, ip, device, lat, lon }) {
+  return crypto
+    .createHmac("sha256", config.auditSecret)
+    .update([token, signedAt || "-", ip || "-", device || "-", lat ?? "-", lon ?? "-"].join("|"))
+    .digest("hex");
 }
 
 async function getLoginAttemptState(ip, email) {
@@ -155,12 +337,7 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.get("/api/client-info", (req, res) => {
-  const forwardedFor = req.headers["x-forwarded-for"];
-  const forwardedIp =
-    typeof forwardedFor === "string" && forwardedFor.trim()
-      ? forwardedFor.split(",")[0].trim()
-      : null;
-  const ip = forwardedIp || req.ip || req.socket?.remoteAddress || null;
+  const ip = getRequestIp(req);
   const device = String(req.headers["user-agent"] || "");
   res.json({ ip, device });
 });
@@ -328,7 +505,7 @@ app.post("/api/users", authRequired, requirePermission("users:create"), async (r
 app.get("/api/municipios", authRequired, requirePermission("municipios:read"), async (_req, res) => {
   const db = getDb();
   const items = await db.all(
-    `SELECT id, nome, email, token, activate_at, status, signed_at, geo_lat, geo_lon, signer_ip, device_info, hash
+    `SELECT id, nome, email, token, activate_at, status, signed_at, geo_lat, geo_lon, signer_ip, device_info, signer_cpf, signer_nome, signature_data_url, documento_html, document_hash, otp_expires_at, otp_verified_at, tsa_utc, tsa_source, tsa_token, hash
      FROM municipios
      ORDER BY id ASC`
   );
@@ -349,6 +526,16 @@ app.put("/api/municipios/snapshot", authRequired, requirePermission("municipios:
         geo: z.object({ lat: z.number(), lon: z.number() }).nullable().optional(),
         ip: z.string().max(120).nullable().optional(),
         device: z.string().max(1024).nullable().optional(),
+        documentoHtml: z.string().max(50000).nullable().optional(),
+        signerCpf: z.string().max(20).nullable().optional(),
+        signerNome: z.string().max(180).nullable().optional(),
+        signatureDataUrl: z.string().max(300000).nullable().optional(),
+        documentHash: z.string().max(120).nullable().optional(),
+        otpExpiresAt: z.string().nullable().optional(),
+        otpVerifiedAt: z.string().nullable().optional(),
+        tsaUtc: z.string().nullable().optional(),
+        tsaSource: z.string().max(120).nullable().optional(),
+        tsaToken: z.string().max(180).nullable().optional(),
         hash: z.string().nullable().optional(),
       })
     ),
@@ -365,8 +552,8 @@ app.put("/api/municipios/snapshot", authRequired, requirePermission("municipios:
     await db.run("DELETE FROM municipios");
     for (const item of parsed.data.items) {
       await db.run(
-        `INSERT INTO municipios (id, nome, email, token, activate_at, status, signed_at, geo_lat, geo_lon, signer_ip, device_info, hash)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO municipios (id, nome, email, token, activate_at, status, signed_at, geo_lat, geo_lon, signer_ip, device_info, documento_html, signer_cpf, signer_nome, signature_data_url, document_hash, otp_expires_at, otp_verified_at, tsa_utc, tsa_source, tsa_token, hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           item.id,
           item.nome,
@@ -379,6 +566,16 @@ app.put("/api/municipios/snapshot", authRequired, requirePermission("municipios:
           item.geo?.lon ?? null,
           item.ip || null,
           item.device || null,
+          item.documentoHtml || null,
+          item.signerCpf || null,
+          item.signerNome || null,
+          item.signatureDataUrl || null,
+          item.documentHash || null,
+          item.otpExpiresAt || null,
+          item.otpVerifiedAt || null,
+          item.tsaUtc || null,
+          item.tsaSource || null,
+          item.tsaToken || null,
           item.hash || null,
         ]
       );
@@ -397,6 +594,267 @@ app.put("/api/municipios/snapshot", authRequired, requirePermission("municipios:
   });
 
   res.json({ ok: true, total: parsed.data.items.length });
+});
+
+app.post("/api/assinaturas/otp/enviar", async (req, res) => {
+  const schema = z.object({ token: z.string().min(4) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Payload inválido", details: parsed.error.flatten() });
+  }
+
+  const db = getDb();
+  const municipio = await db.get("SELECT id, nome, email, token, status FROM municipios WHERE token = ?", [parsed.data.token]);
+  if (!municipio) return res.status(404).json({ error: "Link de assinatura inválido ou expirado" });
+  if (municipio.status === "assinado") return res.status(409).json({ error: "Documento já assinado" });
+
+  const code = generateOtpCode();
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const codeHash = hashOtpCode(code, municipio.token);
+
+  await db.run(
+    `UPDATE municipios
+     SET otp_code_hash = ?, otp_expires_at = ?, otp_verified_at = NULL
+     WHERE id = ?`,
+    [codeHash, expiresAt, municipio.id]
+  );
+
+  const html = [
+    `<p>Olá,</p>`,
+    `<p>Seu código de confirmação de assinatura para o município <strong>${municipio.nome}</strong> é:</p>`,
+    `<p style="font-size:24px;font-weight:700;letter-spacing:2px;margin:12px 0;">${code}</p>`,
+    `<p>Validade: 10 minutos.</p>`,
+  ].join("");
+
+  const result = await sendNotification({
+    to: municipio.email,
+    subject: `Código OTP de assinatura (${municipio.nome})`,
+    html,
+  });
+
+  if (!result.sent) {
+    return res.status(502).json({ error: result.reason || "Falha ao enviar OTP" });
+  }
+
+  await appendAuditLog({
+    actor: null,
+    action: "assinatura.otp.enviado",
+    resourceType: "municipio",
+    resourceId: String(municipio.id),
+    payload: { municipio: municipio.nome, email: municipio.email, expiresAt },
+  });
+
+  return res.json({ ok: true, expiresAt });
+});
+
+app.post("/api/assinaturas/otp/validar", async (req, res) => {
+  const schema = z.object({
+    token: z.string().min(4),
+    codigo: z.string().min(6).max(6),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Payload inválido", details: parsed.error.flatten() });
+  }
+
+  const db = getDb();
+  const municipio = await db.get(
+    "SELECT id, nome, token, otp_code_hash, otp_expires_at, otp_verified_at FROM municipios WHERE token = ?",
+    [parsed.data.token]
+  );
+  if (!municipio) return res.status(404).json({ error: "Link de assinatura inválido ou expirado" });
+  if (!municipio.otp_code_hash || !municipio.otp_expires_at) {
+    return res.status(400).json({ error: "Solicite um código OTP antes de validar" });
+  }
+  if (new Date(municipio.otp_expires_at).getTime() < Date.now()) {
+    return res.status(400).json({ error: "Código OTP expirado" });
+  }
+
+  const expected = hashOtpCode(parsed.data.codigo, municipio.token);
+  if (expected !== municipio.otp_code_hash) {
+    return res.status(401).json({ error: "Código OTP inválido" });
+  }
+
+  const verifiedAt = new Date().toISOString();
+  await db.run("UPDATE municipios SET otp_verified_at = ? WHERE id = ?", [verifiedAt, municipio.id]);
+
+  await appendAuditLog({
+    actor: null,
+    action: "assinatura.otp.validado",
+    resourceType: "municipio",
+    resourceId: String(municipio.id),
+    payload: { municipio: municipio.nome, verifiedAt },
+  });
+
+  return res.json({ ok: true, verifiedAt });
+});
+
+app.post("/api/assinaturas/registrar", async (req, res) => {
+  const schema = z.object({
+    token: z.string().min(4),
+    otpCode: z.string().min(6).max(6),
+    documentHash: z.string().min(64).max(128),
+    cpf: z.string().min(11).max(20),
+    signerNome: z.string().min(2).max(180).optional(),
+    assinaturaDataUrl: z.string().min(30).max(300000),
+    lat: z.number().nullable().optional(),
+    lon: z.number().nullable().optional(),
+    device: z.string().max(1024).nullable().optional(),
+  });
+
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Payload inválido", details: parsed.error.flatten() });
+  }
+
+  const db = getDb();
+  const municipio = await db.get("SELECT * FROM municipios WHERE token = ?", [parsed.data.token]);
+  if (!municipio) {
+    return res.status(404).json({ error: "Link de assinatura inválido ou expirado" });
+  }
+
+  if (municipio.status === "assinado") {
+    return res.json({
+      ok: true,
+      alreadySigned: true,
+      item: {
+        id: municipio.id,
+        nome: municipio.nome,
+        email: municipio.email,
+        token: municipio.token,
+        activate_at: municipio.activate_at,
+        status: municipio.status,
+        signed_at: municipio.signed_at,
+        geo_lat: municipio.geo_lat,
+        geo_lon: municipio.geo_lon,
+        signer_ip: municipio.signer_ip,
+        device_info: municipio.device_info,
+        signer_cpf: municipio.signer_cpf,
+        signer_nome: municipio.signer_nome,
+        signature_data_url: municipio.signature_data_url,
+        document_hash: municipio.document_hash,
+        otp_verified_at: municipio.otp_verified_at,
+        tsa_utc: municipio.tsa_utc,
+        tsa_source: municipio.tsa_source,
+        tsa_token: municipio.tsa_token,
+        hash: municipio.hash,
+      },
+    });
+  }
+
+  const cpfDigits = String(parsed.data.cpf || "").replace(/\D/g, "");
+  if (cpfDigits.length !== 11) {
+    return res.status(400).json({ error: "CPF inválido" });
+  }
+
+  if (!municipio.document_hash) {
+    return res.status(400).json({ error: "Documento não congelado para assinatura" });
+  }
+
+  const otpHash = hashOtpCode(parsed.data.otpCode, municipio.token);
+  if (!municipio.otp_code_hash || otpHash !== municipio.otp_code_hash) {
+    return res.status(401).json({ error: "Código OTP inválido" });
+  }
+  if (!municipio.otp_expires_at || new Date(municipio.otp_expires_at).getTime() < Date.now()) {
+    return res.status(400).json({ error: "Código OTP expirado" });
+  }
+  if (!municipio.otp_verified_at) {
+    return res.status(400).json({ error: "Código OTP ainda não validado" });
+  }
+
+  if (String(parsed.data.documentHash) !== String(municipio.document_hash)) {
+    return res.status(409).json({ error: "Hash do documento divergente. Reabra o link de assinatura." });
+  }
+
+  const signedAt = new Date().toISOString();
+  const ip = getRequestIp(req);
+  const deviceInfo = getRequestDevice(req, parsed.data.device);
+  const tsa = await getTrustedTimestampUtc();
+  const tsaToken = generateTsaToken({
+    token: municipio.token,
+    documentHash: municipio.document_hash,
+    signedAt,
+    tsaUtc: tsa.utc,
+    source: tsa.source,
+  });
+  const hash = buildSignatureHash({
+    token: municipio.token,
+    signedAt,
+    ip,
+    device: `${deviceInfo || "-"}|${cpfDigits}|${municipio.document_hash}|${tsa.utc}`,
+    lat: parsed.data.lat ?? null,
+    lon: parsed.data.lon ?? null,
+  });
+
+  await db.run(
+    `UPDATE municipios
+     SET status = 'assinado', signed_at = ?, geo_lat = ?, geo_lon = ?, signer_ip = ?, device_info = ?, signer_cpf = ?, signer_nome = ?, signature_data_url = ?, tsa_utc = ?, tsa_source = ?, tsa_token = ?, hash = ?
+     WHERE id = ?`,
+    [
+      signedAt,
+      parsed.data.lat ?? null,
+      parsed.data.lon ?? null,
+      ip,
+      deviceInfo,
+      cpfDigits,
+      parsed.data.signerNome || "Representante Municipal",
+      parsed.data.assinaturaDataUrl,
+      tsa.utc,
+      tsa.source,
+      tsaToken,
+      hash,
+      municipio.id,
+    ]
+  );
+
+  const updated = await db.get(
+    `SELECT id, nome, email, token, activate_at, status, signed_at, geo_lat, geo_lon, signer_ip, device_info, signer_cpf, signer_nome, signature_data_url, document_hash, otp_verified_at, tsa_utc, tsa_source, tsa_token, hash
+     FROM municipios
+     WHERE id = ?`,
+    [municipio.id]
+  );
+
+  await appendAuditLog({
+    actor: null,
+    action: "assinatura.publica",
+    resourceType: "municipio",
+    resourceId: String(municipio.id),
+    payload: {
+      nome: municipio.nome,
+      token: municipio.token,
+      ip,
+      device: deviceInfo,
+      cpf: cpfDigits,
+      signerNome: parsed.data.signerNome || "Representante Municipal",
+      documentHash: municipio.document_hash,
+      otpVerifiedAt: municipio.otp_verified_at,
+      tsaUtc: tsa.utc,
+      tsaSource: tsa.source,
+      tsaToken,
+      lat: parsed.data.lat ?? null,
+      lon: parsed.data.lon ?? null,
+      signedAt,
+      hash,
+    },
+  });
+
+  return res.json({ ok: true, item: updated });
+});
+
+app.get("/api/assinaturas/publico/:token", async (req, res) => {
+  const token = String(req.params.token || "").trim();
+  if (!token) return res.status(400).json({ error: "Token inválido" });
+
+  const db = getDb();
+  const item = await db.get(
+    `SELECT id, nome, email, token, activate_at, status, signed_at, geo_lat, geo_lon, signer_ip, device_info, signer_cpf, signer_nome, signature_data_url, documento_html, document_hash, otp_expires_at, otp_verified_at, tsa_utc, tsa_source, tsa_token, hash
+     FROM municipios
+     WHERE token = ?`,
+    [token]
+  );
+
+  if (!item) return res.status(404).json({ error: "Link de assinatura inválido ou expirado" });
+  return res.json({ item });
 });
 
 app.get("/api/processos", authRequired, requirePermission("processos:read"), async (req, res) => {
@@ -771,6 +1229,8 @@ app.post("/api/assinaturas/disparar", async (req, res) => {
     subject: z.string().min(5),
     html: z.string().min(5),
     municipio: z.string().min(1).max(180).optional(),
+    token: z.string().min(4).optional(),
+    documentoHtml: z.string().max(25000).optional(),
   });
 
   const parsed = schema.safeParse(req.body);
@@ -778,10 +1238,30 @@ app.post("/api/assinaturas/disparar", async (req, res) => {
     return res.status(400).json({ error: "Payload inválido", details: parsed.error.flatten() });
   }
 
+  const db = getDb();
+  if (parsed.data.token) {
+    const corpoDocumento = ((parsed.data.documentoHtml || "").trim() || defaultSignatureDocumentHtml()).slice(0, 20000);
+    const documentoHash = computeDocumentHash(corpoDocumento);
+    await db.run(
+      `UPDATE municipios
+       SET documento_html = ?,
+           document_hash = ?,
+           otp_code_hash = NULL,
+           otp_expires_at = NULL,
+           otp_verified_at = NULL,
+           tsa_utc = NULL,
+           tsa_source = NULL,
+           tsa_token = NULL
+       WHERE token = ?`,
+      [corpoDocumento, documentoHash, parsed.data.token]
+    );
+  }
+
   const result = await sendNotification({
     to: parsed.data.to,
     subject: parsed.data.subject,
     html: parsed.data.html,
+    attachments: getTimbradoEmailAttachments(),
   });
 
   await appendAuditLog({
@@ -804,6 +1284,7 @@ app.post("/api/assinaturas/teste-envio", async (req, res) => {
   const schema = z.object({
     to: z.string().email(),
     municipio: z.string().min(1).max(180).optional(),
+    linkAssinatura: z.string().min(10).optional(),
     subject: z.string().min(5).max(180).optional(),
     html: z.string().min(5).max(50000).optional(),
   });
@@ -815,19 +1296,17 @@ app.post("/api/assinaturas/teste-envio", async (req, res) => {
 
   const municipio = parsed.data.municipio || "Município Teste";
   const subject = parsed.data.subject || `Teste de envio - Assinatura (${municipio})`;
-  const html =
-    parsed.data.html ||
-    [
-      `<p>Este é um <strong>teste de envio</strong> do sistema de manifestações.</p>`,
-      `<p>Município de referência: <strong>${municipio}</strong></p>`,
-      `<p>Horário: ${new Date().toLocaleString("pt-BR")}</p>`,
-      `<p>Se recebeu este e-mail, o disparo está funcionando corretamente.</p>`,
-    ].join("");
+  const html = parsed.data.html || buildSignatureEmailHtml({
+    municipio,
+    linkAssinatura: parsed.data.linkAssinatura,
+    documentoHtml: defaultSignatureDocumentHtml(),
+  });
 
   const result = await sendNotification({
     to: parsed.data.to,
     subject,
     html,
+    attachments: getTimbradoEmailAttachments(),
   });
 
   await appendAuditLog({
@@ -866,27 +1345,42 @@ app.post("/api/assinaturas/disparar-lote", async (req, res) => {
     return res.status(400).json({ error: "Payload inválido", details: parsed.error.flatten() });
   }
 
-  const corpoDocumento = (parsed.data.documentoHtml || "").trim().slice(0, 20000);
+  const corpoDocumento = ((parsed.data.documentoHtml || "").trim() || defaultSignatureDocumentHtml()).slice(0, 20000);
+  const db = getDb();
+  const documentoHash = computeDocumentHash(corpoDocumento);
   const enviados = [];
   const falhas = [];
 
   for (const item of parsed.data.itens) {
+    const token = extractTokenFromSignatureLink(item.linkAssinatura);
+    if (token) {
+      await db.run(
+        `UPDATE municipios
+         SET documento_html = ?,
+             document_hash = ?,
+             otp_code_hash = NULL,
+             otp_expires_at = NULL,
+             otp_verified_at = NULL,
+             tsa_utc = NULL,
+             tsa_source = NULL,
+             tsa_token = NULL
+         WHERE token = ?`,
+        [corpoDocumento || null, documentoHash, token]
+      );
+    }
+
     const subject = `Manifestação de Interesse - Assinatura (${item.municipio})`;
-    const html = [
-      `<p>Prezados(as),</p>`,
-      `<p>Segue o link para assinatura da manifestação de interesse do município <strong>${item.municipio}</strong>.</p>`,
-      `<p><a href="${item.linkAssinatura}" target="_blank" rel="noopener noreferrer">Clique aqui para assinar o documento</a></p>`,
-      `<p>Se o botão não abrir, copie e cole o link abaixo no navegador:</p>`,
-      `<p style="word-break:break-all;"><code>${item.linkAssinatura}</code></p>`,
-      `<hr/>`,
-      `<p><strong>Documento para assinatura:</strong></p>`,
-      corpoDocumento || `<p><em>Documento não informado no momento do disparo.</em></p>`,
-    ].join("");
+    const html = buildSignatureEmailHtml({
+      municipio: item.municipio,
+      linkAssinatura: item.linkAssinatura,
+      documentoHtml: corpoDocumento || `<p><em>Documento não informado no momento do disparo.</em></p>`,
+    });
 
     const result = await sendNotification({
       to: item.to,
       subject,
       html,
+      attachments: getTimbradoEmailAttachments(),
     });
 
     if (result.sent) {

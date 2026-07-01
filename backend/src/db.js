@@ -30,6 +30,50 @@ async function ensureMunicipiosColumns() {
   if (!names.has("device_info")) {
     await db.exec("ALTER TABLE municipios ADD COLUMN device_info TEXT");
   }
+
+  if (!names.has("documento_html")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN documento_html TEXT");
+  }
+
+  if (!names.has("signer_cpf")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN signer_cpf TEXT");
+  }
+
+  if (!names.has("signer_nome")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN signer_nome TEXT");
+  }
+
+  if (!names.has("signature_data_url")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN signature_data_url TEXT");
+  }
+
+  if (!names.has("document_hash")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN document_hash TEXT");
+  }
+
+  if (!names.has("otp_code_hash")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN otp_code_hash TEXT");
+  }
+
+  if (!names.has("otp_expires_at")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN otp_expires_at TEXT");
+  }
+
+  if (!names.has("otp_verified_at")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN otp_verified_at TEXT");
+  }
+
+  if (!names.has("tsa_utc")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN tsa_utc TEXT");
+  }
+
+  if (!names.has("tsa_source")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN tsa_source TEXT");
+  }
+
+  if (!names.has("tsa_token")) {
+    await db.exec("ALTER TABLE municipios ADD COLUMN tsa_token TEXT");
+  }
 }
 
 export async function initDb() {
@@ -94,6 +138,17 @@ export async function initDb() {
       geo_lon REAL,
       signer_ip TEXT,
       device_info TEXT,
+      documento_html TEXT,
+      signer_cpf TEXT,
+      signer_nome TEXT,
+      signature_data_url TEXT,
+      document_hash TEXT,
+      otp_code_hash TEXT,
+      otp_expires_at TEXT,
+      otp_verified_at TEXT,
+      tsa_utc TEXT,
+      tsa_source TEXT,
+      tsa_token TEXT,
       hash TEXT
     );
 

@@ -502,6 +502,16 @@ function htmlToPlainText(inputHtml) {
     .trim();
 }
 
+function formatIpDisplay(ipValue) {
+  const raw = String(ipValue || "").trim();
+  if (!raw) return "Não disponível";
+
+  let ip = raw.includes(",") ? raw.split(",")[0].trim() : raw;
+  if (ip.toLowerCase().startsWith("::ffff:")) ip = ip.slice(7);
+  if (ip === "::1" || ip === "0:0:0:0:0:0:0:1") return "127.0.0.1";
+  return ip;
+}
+
 async function imageUrlToDataUrl(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Falha ao carregar imagem: ${url}`);
@@ -918,12 +928,24 @@ function DocPreview({ municipio, docHtml, signData }) {
           <div style={{ fontSize: 12, color: "#333", lineHeight: 1.7 }}>
             <strong>{signData.nome}</strong><br />
             {signData.cargo} — {municipio}<br />
+            CPF: {signData.cpf || "Não informado"}<br />
             Assinado em: {new Date(signData.at).toLocaleString("pt-BR")}<br />
+            TSA: {signData.tsaUtc ? `${new Date(signData.tsaUtc).toLocaleString("pt-BR")} (${signData.tsaSource || "fonte externa"})` : "não disponível"}<br />
             Geolocalização: {signData.lat?.toFixed(6)}, {signData.lon?.toFixed(6)}<br />
-            IP: {signData.ip || "Não disponível"}<br />
+            IP: {formatIpDisplay(signData.ip)}<br />
             Aparelho: {signData.device || "Não disponível"}<br />
             <span style={{ fontFamily: "monospace", fontSize: 10 }}>Hash: {signData.hash}</span>
           </div>
+          {signData.assinaturaDataUrl && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 10, color: "#666", marginBottom: 4 }}>Assinatura desenhada:</div>
+              <img
+                src={signData.assinaturaDataUrl}
+                alt="Assinatura do signatário"
+                style={{ maxWidth: 300, width: "100%", border: "1px solid #d4d4d4", borderRadius: 4, background: "#fff" }}
+              />
+            </div>
+          )}
         </div>
       ) : (
         <div style={{
@@ -1344,10 +1366,22 @@ export default function App() {
     html: "",
   });
   const apiDocFileInputRef = useRef(null);
-  const assinaturaTokenProcessadoRef = useRef("");
   const assinaturaTokenUrl = getAssinaturaTokenFromUrl();
   const assinaturaPublicaAtiva = Boolean(assinaturaTokenUrl);
   const [assinaturaPublicaProcessando, setAssinaturaPublicaProcessando] = useState(false);
+  const [assinaturaPublicaDocHtml, setAssinaturaPublicaDocHtml] = useState("");
+  const [assinaturaPublicaMeta, setAssinaturaPublicaMeta] = useState(null);
+  const [assinaturaPublicaCpf, setAssinaturaPublicaCpf] = useState("");
+  const [assinaturaPublicaNome, setAssinaturaPublicaNome] = useState("");
+  const [assinaturaPublicaAceite, setAssinaturaPublicaAceite] = useState(false);
+  const [assinaturaPublicaErro, setAssinaturaPublicaErro] = useState("");
+  const [assinaturaPublicaAssinaturaDataUrl, setAssinaturaPublicaAssinaturaDataUrl] = useState("");
+  const [assinaturaPublicaOtpCode, setAssinaturaPublicaOtpCode] = useState("");
+  const [assinaturaPublicaOtpVerifiedAt, setAssinaturaPublicaOtpVerifiedAt] = useState("");
+  const [assinaturaPublicaOtpSending, setAssinaturaPublicaOtpSending] = useState(false);
+  const [assinaturaPublicaOtpValidating, setAssinaturaPublicaOtpValidating] = useState(false);
+  const assinaturaCanvasRef = useRef(null);
+  const assinaturaCanvasDrawingRef = useRef(false);
 
   useEffect(() => {
     try {
@@ -1392,124 +1426,124 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!assinaturaTokenUrl || assinaturaTokenProcessadoRef.current === assinaturaTokenUrl) return;
-
-    const municipioLink = municipios.find((m) => m.token === assinaturaTokenUrl);
-    if (!municipioLink) return;
-
-    assinaturaTokenProcessadoRef.current = assinaturaTokenUrl;
-
-    const assinarPorLink = async () => {
-      setAssinaturaPublicaProcessando(true);
-      const fallbackLat = -21.79 + (Math.random() - 0.5) * 0.3;
-      const fallbackLon = -46.56 + (Math.random() - 0.5) * 0.3;
-
-      const geo = await new Promise((resolve) => {
-        if (!navigator.geolocation) {
-          resolve({ lat: fallbackLat, lon: fallbackLon });
-          return;
-        }
-
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude });
-          },
-          () => {
-            resolve({ lat: fallbackLat, lon: fallbackLon });
-          },
-          { timeout: 6000 }
-        );
-      });
-
-      let ip = "Não disponível";
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/client-info`);
-        const payload = await res.json();
-        if (res.ok && typeof payload.ip === "string" && payload.ip.trim()) {
-          ip = payload.ip.trim();
-        }
-      } catch {
-        // Mantém valor padrão se não conseguir capturar IP.
-      }
-
-      const platform = navigator.userAgentData?.platform || navigator.platform || "Plataforma desconhecida";
-      const userAgent = navigator.userAgent || "User-Agent indisponível";
-      const device = `${platform} | ${userAgent}`;
-
-      const sig = {
-        nome: "Representante Municipal",
-        cargo: "Prefeito(a) Municipal",
-        at: new Date().toISOString(),
-        lat: geo.lat,
-        lon: geo.lon,
-        ip,
-        device,
-        hash: "SIG-" + Math.random().toString(36).slice(2, 12).toUpperCase(),
-      };
-
-      const signedMunicipio = {
-        ...municipioLink,
-        status: "assinado",
-        signedAt: sig.at,
-        geo: { lat: sig.lat, lon: sig.lon },
-        ip: sig.ip,
-        device: sig.device,
-        hash: sig.hash,
-      };
-
-      setMunicipios((prev) =>
-        prev.map((m) =>
-          m.id === municipioLink.id
-            ? {
-                ...m,
-                status: "assinado",
-                signedAt: sig.at,
-                geo: { lat: sig.lat, lon: sig.lon },
-                ip: sig.ip,
-                device: sig.device,
-                hash: sig.hash,
-              }
-            : m
-        )
-      );
-      setSigns((prev) => ({ ...prev, [municipioLink.id]: sig }));
-      setSelectedMuni(signedMunicipio);
-      setContratoSelecionado(signedMunicipio);
-      if (!assinaturaPublicaAtiva) {
-        setTab("contratos");
-      }
-      if (["rascunho", "revisao", "envio"].includes(etapaFluxo)) {
-        setEtapaFluxo("assinaturas");
-      }
-
-      const auditEntry = {
-        id: Date.now() + Math.random(),
-        at: new Date().toISOString(),
-        acao: "assinatura.link",
-        detalhes: `${municipioLink.nome} assinou via link`,
-      };
-      setAuditoria((prev) => [auditEntry, ...prev].slice(0, 300));
-
-      setToast(`✅ ${municipioLink.nome} assinou automaticamente. Contrato pronto para download.`);
-      setTimeout(() => setToast(null), 3200);
-
-      setAssinaturaPublicaProcessando(false);
-    };
-
-    if (municipioLink.status === "assinado" && municipioLink.hash) {
-      setSelectedMuni(municipioLink);
-      setContratoSelecionado(municipioLink);
-      if (!assinaturaPublicaAtiva) {
-        setTab("contratos");
-      }
-      setToast(`📄 ${municipioLink.nome} já estava assinado. Contrato pronto para download.`);
-      setTimeout(() => setToast(null), 2800);
-      setAssinaturaPublicaProcessando(false);
+    if (!assinaturaTokenUrl) {
+      setAssinaturaPublicaDocHtml("");
+      setAssinaturaPublicaMeta(null);
+      setAssinaturaPublicaOtpCode("");
+      setAssinaturaPublicaOtpVerifiedAt("");
       return;
     }
 
-    assinarPorLink();
-  }, [assinaturaTokenUrl, assinaturaPublicaAtiva, municipios, etapaFluxo]);
+    const carregarDocumentoPublico = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/assinaturas/publico/${encodeURIComponent(assinaturaTokenUrl)}`);
+        const raw = await res.text();
+        const data = raw ? JSON.parse(raw) : {};
+        if (!res.ok || !data.item) return;
+
+        setAssinaturaPublicaMeta(data.item);
+        setAssinaturaPublicaDocHtml(String(data.item.documento_html || ""));
+        setAssinaturaPublicaOtpVerifiedAt(String(data.item.otp_verified_at || ""));
+      } catch {
+        // Mantém fallback local quando API pública não responder.
+      }
+    };
+
+    carregarDocumentoPublico();
+  }, [assinaturaTokenUrl]);
+
+  const normalizeCpf = useCallback((value) => String(value || "").replace(/\D/g, "").slice(0, 11), []);
+
+  const formatCpf = useCallback((value) => {
+    const digits = normalizeCpf(value);
+    return digits
+      .replace(/(\d{3})(\d)/, "$1.$2")
+      .replace(/(\d{3})(\d)/, "$1.$2")
+      .replace(/(\d{3})(\d{1,2})$/, "$1-$2");
+  }, [normalizeCpf]);
+
+  const isValidCpf = useCallback((value) => {
+    const cpf = normalizeCpf(value);
+    if (cpf.length !== 11 || /^(\d)\1{10}$/.test(cpf)) return false;
+
+    const calcDigit = (slice, factor) => {
+      let total = 0;
+      for (const digit of slice) {
+        total += Number(digit) * factor;
+        factor -= 1;
+      }
+      const rest = (total * 10) % 11;
+      return rest === 10 ? 0 : rest;
+    };
+
+    const d1 = calcDigit(cpf.slice(0, 9), 10);
+    const d2 = calcDigit(cpf.slice(0, 10), 11);
+    return d1 === Number(cpf[9]) && d2 === Number(cpf[10]);
+  }, [normalizeCpf]);
+
+  const setupSignatureCanvas = useCallback(() => {
+    const canvas = assinaturaCanvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(320, Math.floor(canvas.clientWidth || 720));
+    const height = 180;
+    canvas.width = Math.floor(width * dpr);
+    canvas.height = Math.floor(height * dpr);
+    canvas.style.height = `${height}px`;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 2.2;
+    ctx.strokeStyle = "#0f172a";
+    setAssinaturaPublicaAssinaturaDataUrl("");
+  }, []);
+
+  useEffect(() => {
+    if (!assinaturaPublicaAtiva) return;
+    const tid = setTimeout(() => setupSignatureCanvas(), 0);
+    return () => clearTimeout(tid);
+  }, [assinaturaPublicaAtiva, setupSignatureCanvas]);
+
+  const clearSignatureCanvas = useCallback(() => {
+    setupSignatureCanvas();
+    assinaturaCanvasDrawingRef.current = false;
+  }, [setupSignatureCanvas]);
+
+  const startCanvasStroke = useCallback((event) => {
+    const canvas = assinaturaCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    assinaturaCanvasDrawingRef.current = true;
+  }, []);
+
+  const moveCanvasStroke = useCallback((event) => {
+    const canvas = assinaturaCanvasRef.current;
+    if (!canvas || !assinaturaCanvasDrawingRef.current) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  }, []);
+
+  const endCanvasStroke = useCallback(() => {
+    const canvas = assinaturaCanvasRef.current;
+    if (!canvas) return;
+    assinaturaCanvasDrawingRef.current = false;
+    setAssinaturaPublicaAssinaturaDataUrl(canvas.toDataURL("image/png"));
+  }, []);
 
   useEffect(() => {
     try {
@@ -1598,6 +1632,10 @@ export default function App() {
       : null,
     ip: item.ip || null,
     device: item.device || null,
+    signerCpf: item.signerCpf || null,
+    signerNome: item.signerNome || null,
+    signatureDataUrl: item.signatureDataUrl || null,
+    documentoHtml: item.documentoHtml || null,
     hash: item.hash || null,
   }), []);
 
@@ -1615,6 +1653,10 @@ export default function App() {
         : null,
     ip: item.signer_ip || null,
     device: item.device_info || null,
+    signerCpf: item.signer_cpf || null,
+    signerNome: item.signer_nome || null,
+    signatureDataUrl: item.signature_data_url || null,
+    documentoHtml: item.documento_html || null,
     hash: item.hash || null,
   }), []);
 
@@ -2622,22 +2664,51 @@ export default function App() {
     registrarAuditoria("relatorio.exportado", "CSV de municípios");
   };
 
+  const getDocumentoParaEnvioEmail = useCallback(() => {
+    const atual = (docHtml || "").trim();
+    if (atual) return atual.slice(0, 20000);
+    const template = buildManifestacaoTemplate(consorcio.nome || "CONSÓRCIO INTERMUNICIPAL");
+    return String(template || "").trim().slice(0, 20000);
+  }, [docHtml, consorcio.nome]);
+
+  const buildEmailHtmlTimbrado = useCallback((muni, linkAssinatura, corpoDocumento) => {
+    const headerSrc = "cid:timbrado-header";
+    const footerSrc = "cid:timbrado-footer";
+
+    return [
+      `<div style="font-family:Segoe UI, Arial, sans-serif;background:#eef3f9;padding:20px;color:#1f2937;">`,
+      `<div style="max-width:860px;margin:0 auto;background:#ffffff;border:1px solid #d8e3ef;border-radius:10px;overflow:hidden;">`,
+      `<div style="padding:0;background:#ffffff;border-bottom:1px solid #e5edf5;">`,
+      `<img src="${headerSrc}" alt="Timbrado institucional" style="display:block;width:100%;max-height:130px;object-fit:cover;"/>`,
+      `</div>`,
+      `<div style="padding:22px 24px 16px;line-height:1.6;">`,
+      `<h2 style="margin:0 0 10px;font-size:20px;color:#0f4c81;">Manifestação de Interesse para Assinatura</h2>`,
+      `<p style="margin:0 0 8px;">Prezado(a),</p>`,
+      `<p style="margin:0 0 8px;">Este e-mail contém o documento completo para análise e assinatura eletrônica.</p>`,
+      `<p style="margin:0 0 6px;"><strong>Município:</strong> ${muni.nome}</p>`,
+      `<p style="margin:0 0 4px;"><strong>Emissão:</strong> ${new Date().toLocaleString("pt-BR")}</p>`,
+      `<div style="margin:16px 0 18px;padding:12px 14px;background:#f2f6fb;border:1px solid #d8e3ef;border-radius:8px;">`,
+      `<p style="margin:0 0 8px;font-size:13px;color:#1f2937;"><strong>Ação necessária:</strong> clique no botão abaixo para assinar eletronicamente.</p>`,
+      `<p style="margin:0;"><a href="${linkAssinatura}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:10px 14px;border-radius:6px;background:#0f4c81;color:#ffffff;text-decoration:none;font-weight:600;">Assinar documento</a></p>`,
+      `</div>`,
+      `<div style="margin-top:16px;padding:16px;border:1px solid #d8e3ef;border-radius:8px;background:#fcfdff;">`,
+      `<p style="margin:0 0 10px;font-size:13px;color:#4b5563;"><strong>Documento na íntegra</strong></p>`,
+      corpoDocumento || `<p><em>Documento não informado no momento do disparo.</em></p>`,
+      `</div>`,
+      `</div>`,
+      `<div style="padding:0;border-top:1px solid #e5edf5;background:#ffffff;">`,
+      `<img src="${footerSrc}" alt="Rodapé institucional" style="display:block;width:100%;max-height:95px;object-fit:cover;"/>`,
+      `</div>`,
+      `</div>`,
+      `</div>`,
+    ].join("");
+  }, []);
+
   const enviarEmailAssinaturaApi = useCallback(
     async (muni, linkAssinatura) => {
       const subject = `Manifestação de Interesse - Assinatura (${muni.nome})`;
-      const corpoDocumento = (docHtml || "")
-        .trim()
-        .slice(0, 20000);
-      const html = [
-        `<p>Prezados(as),</p>`,
-        `<p>Segue o link para assinatura da manifestação de interesse do município <strong>${muni.nome}</strong>.</p>`,
-        `<p><a href="${linkAssinatura}" target="_blank" rel="noopener noreferrer">Clique aqui para assinar o documento</a></p>`,
-        `<p>Se o botão não abrir, copie e cole o link abaixo no navegador:</p>`,
-        `<p style="word-break:break-all;"><code>${linkAssinatura}</code></p>`,
-        `<hr/>`,
-        `<p><strong>Documento para assinatura:</strong></p>`,
-        corpoDocumento || `<p><em>Documento não informado no momento do disparo.</em></p>`,
-      ].join("");
+      const corpoDocumento = getDocumentoParaEnvioEmail();
+      const html = buildEmailHtmlTimbrado(muni, linkAssinatura, corpoDocumento);
 
       try {
         const res = await fetch(`${API_BASE_URL}/api/assinaturas/disparar`, {
@@ -2650,6 +2721,8 @@ export default function App() {
             subject,
             html,
             municipio: muni.nome,
+            token: muni.token,
+            documentoHtml: corpoDocumento,
           }),
         });
 
@@ -2669,7 +2742,7 @@ export default function App() {
         return { ok: false, reason: `erro de rede/API: ${String(err.message || err)}` };
       }
     },
-    [docHtml]
+    [buildEmailHtmlTimbrado, getDocumentoParaEnvioEmail]
   );
 
   const enviarLoteAssinatura = useCallback(
@@ -2707,7 +2780,7 @@ export default function App() {
             "content-type": "application/json",
           },
           body: JSON.stringify({
-            documentoHtml: (docHtml || "").trim().slice(0, 20000),
+            documentoHtml: getDocumentoParaEnvioEmail(),
             itens,
           }),
         });
@@ -2759,7 +2832,7 @@ export default function App() {
         };
       }
     },
-    [docHtml, enviarEmailAssinaturaApi]
+    [getDocumentoParaEnvioEmail, enviarEmailAssinaturaApi]
   );
 
   const enviarUm = async (id) => {
@@ -2999,7 +3072,7 @@ export default function App() {
         y += 15;
         pdf.text(`Geolocalização: ${m.geo?.lat?.toFixed(6)}, ${m.geo?.lon?.toFixed(6)}`, marginX, y);
         y += 15;
-        pdf.text(`IP: ${m.ip || "Não disponível"}`, marginX, y);
+        pdf.text(`IP: ${formatIpDisplay(m.ip)}`, marginX, y);
         y += 15;
         const aparelhoLines = pdf.splitTextToSize(`Aparelho: ${m.device || "Não disponível"}`, pageW - marginX * 2);
         aparelhoLines.forEach((line) => {
@@ -3142,7 +3215,7 @@ export default function App() {
       y += 15;
       pdf.text(`Geolocalização: ${muni.geo?.lat?.toFixed(6)}, ${muni.geo?.lon?.toFixed(6)}`, marginX, y);
       y += 15;
-      pdf.text(`IP: ${muni.ip || "Não disponível"}`, marginX, y);
+      pdf.text(`IP: ${formatIpDisplay(muni.ip)}`, marginX, y);
       y += 15;
       const aparelhoLines = pdf.splitTextToSize(`Aparelho: ${muni.device || "Não disponível"}`, pageW - marginX * 2);
       aparelhoLines.forEach((line) => {
@@ -3208,6 +3281,216 @@ export default function App() {
     }
   };
 
+  const assinarDocumentoPublico = async (municipioPublico) => {
+    if (!municipioPublico) return;
+
+    const cpfNormalizado = normalizeCpf(assinaturaPublicaCpf);
+    if (!isValidCpf(cpfNormalizado)) {
+      setAssinaturaPublicaErro("Informe um CPF válido para assinar.");
+      return;
+    }
+    if (!assinaturaPublicaAssinaturaDataUrl) {
+      setAssinaturaPublicaErro("Desenhe a assinatura no campo indicado antes de continuar.");
+      return;
+    }
+    if (!assinaturaPublicaAceite) {
+      setAssinaturaPublicaErro("Confirme o aceite dos termos para concluir a assinatura.");
+      return;
+    }
+    if (!assinaturaPublicaOtpVerifiedAt) {
+      setAssinaturaPublicaErro("Valide o código OTP de 6 dígitos antes de assinar.");
+      return;
+    }
+    if (!municipioPublico.documentHash) {
+      setAssinaturaPublicaErro("Hash do documento indisponível. Reabra o link enviado por e-mail.");
+      return;
+    }
+
+    setAssinaturaPublicaErro("");
+    setAssinaturaPublicaProcessando(true);
+
+    const fallbackLat = -21.79 + (Math.random() - 0.5) * 0.3;
+    const fallbackLon = -46.56 + (Math.random() - 0.5) * 0.3;
+    const geo = await new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve({ lat: fallbackLat, lon: fallbackLon });
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        () => resolve({ lat: fallbackLat, lon: fallbackLon }),
+        { timeout: 6000 }
+      );
+    });
+
+    const platform = navigator.userAgentData?.platform || navigator.platform || "Plataforma desconhecida";
+    const userAgent = navigator.userAgent || "User-Agent indisponível";
+    const device = `${platform} | ${userAgent}`;
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/assinaturas/registrar`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          token: municipioPublico.token,
+          otpCode: assinaturaPublicaOtpCode,
+          documentHash: municipioPublico.documentHash,
+          cpf: cpfNormalizado,
+          signerNome: assinaturaPublicaNome.trim() || "Representante Municipal",
+          assinaturaDataUrl: assinaturaPublicaAssinaturaDataUrl,
+          lat: geo.lat,
+          lon: geo.lon,
+          device,
+        }),
+      });
+
+      const raw = await res.text();
+      const data = raw ? JSON.parse(raw) : {};
+      if (!res.ok || !data.item) {
+        throw new Error(data.error || `falha ao registrar assinatura (${res.status})`);
+      }
+
+      const item = data.item;
+      const signedMunicipio = {
+        id: item.id,
+        nome: item.nome,
+        email: item.email,
+        token: item.token,
+        activateAt: item.activate_at ? new Date(item.activate_at) : municipioPublico.activateAt,
+        status: item.status,
+        signedAt: item.signed_at,
+        geo: typeof item.geo_lat === "number" && typeof item.geo_lon === "number"
+          ? { lat: item.geo_lat, lon: item.geo_lon }
+          : { lat: geo.lat, lon: geo.lon },
+        ip: item.signer_ip || "Não disponível",
+        device: item.device_info || device,
+        signerCpf: item.signer_cpf || cpfNormalizado,
+        signerNome: item.signer_nome || assinaturaPublicaNome.trim() || "Representante Municipal",
+        signatureDataUrl: item.signature_data_url || assinaturaPublicaAssinaturaDataUrl,
+        documentHash: item.document_hash || municipioPublico.documentHash,
+        otpVerifiedAt: item.otp_verified_at || assinaturaPublicaOtpVerifiedAt,
+        tsaUtc: item.tsa_utc || null,
+        tsaSource: item.tsa_source || null,
+        tsaToken: item.tsa_token || null,
+        hash: item.hash || "",
+      };
+
+      setMunicipios((prev) =>
+        prev.map((m) =>
+          m.token === municipioPublico.token
+            ? {
+                ...m,
+                status: "assinado",
+                signedAt: signedMunicipio.signedAt,
+                geo: signedMunicipio.geo,
+                ip: signedMunicipio.ip,
+                device: signedMunicipio.device,
+                signerCpf: signedMunicipio.signerCpf,
+                signerNome: signedMunicipio.signerNome,
+                signatureDataUrl: signedMunicipio.signatureDataUrl,
+                documentHash: signedMunicipio.documentHash,
+                otpVerifiedAt: signedMunicipio.otpVerifiedAt,
+                tsaUtc: signedMunicipio.tsaUtc,
+                tsaSource: signedMunicipio.tsaSource,
+                tsaToken: signedMunicipio.tsaToken,
+                hash: signedMunicipio.hash,
+              }
+            : m
+        )
+      );
+
+      setSigns((prev) => ({
+        ...prev,
+        [signedMunicipio.id]: {
+          nome: signedMunicipio.signerNome,
+          cargo: "Representante Municipal",
+          cpf: formatCpf(signedMunicipio.signerCpf),
+          assinaturaDataUrl: signedMunicipio.signatureDataUrl,
+          tsaUtc: signedMunicipio.tsaUtc,
+          tsaSource: signedMunicipio.tsaSource,
+          tsaToken: signedMunicipio.tsaToken,
+          at: signedMunicipio.signedAt,
+          lat: signedMunicipio.geo?.lat,
+          lon: signedMunicipio.geo?.lon,
+          ip: signedMunicipio.ip,
+          device: signedMunicipio.device,
+          hash: signedMunicipio.hash,
+        },
+      }));
+
+      setSelectedMuni(signedMunicipio);
+      setContratoSelecionado(signedMunicipio);
+      setAssinaturaPublicaMeta((prev) => ({ ...(prev || {}), ...item }));
+
+      const auditEntry = {
+        id: Date.now() + Math.random(),
+        at: new Date().toISOString(),
+        acao: "assinatura.link",
+        detalhes: `${signedMunicipio.nome} assinou via link público`,
+      };
+      setAuditoria((prev) => [auditEntry, ...prev].slice(0, 300));
+
+      setToast(`✅ Assinatura registrada para ${signedMunicipio.nome}.`);
+      setTimeout(() => setToast(null), 3200);
+    } catch (err) {
+      setAssinaturaPublicaErro(String(err.message || err));
+    } finally {
+      setAssinaturaPublicaProcessando(false);
+    }
+  };
+
+  const enviarOtpPublico = async (municipioPublico) => {
+    if (!municipioPublico) return;
+    setAssinaturaPublicaErro("");
+    setAssinaturaPublicaOtpSending(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/assinaturas/otp/enviar`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: municipioPublico.token }),
+      });
+      const raw = await res.text();
+      const data = raw ? JSON.parse(raw) : {};
+      if (!res.ok) throw new Error(data.error || `falha ao enviar OTP (${res.status})`);
+      setAssinaturaPublicaOtpCode("");
+      setAssinaturaPublicaOtpVerifiedAt("");
+      setToast("📩 Código OTP enviado para o e-mail do município.");
+      setTimeout(() => setToast(null), 2800);
+    } catch (err) {
+      setAssinaturaPublicaErro(String(err.message || err));
+    } finally {
+      setAssinaturaPublicaOtpSending(false);
+    }
+  };
+
+  const validarOtpPublico = async (municipioPublico) => {
+    if (!municipioPublico) return;
+    if (!/^\d{6}$/.test(assinaturaPublicaOtpCode)) {
+      setAssinaturaPublicaErro("Informe o código OTP com 6 dígitos.");
+      return;
+    }
+    setAssinaturaPublicaErro("");
+    setAssinaturaPublicaOtpValidating(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/assinaturas/otp/validar`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: municipioPublico.token, codigo: assinaturaPublicaOtpCode }),
+      });
+      const raw = await res.text();
+      const data = raw ? JSON.parse(raw) : {};
+      if (!res.ok) throw new Error(data.error || `falha ao validar OTP (${res.status})`);
+      setAssinaturaPublicaOtpVerifiedAt(String(data.verifiedAt || new Date().toISOString()));
+      setAssinaturaPublicaMeta((prev) => ({ ...(prev || {}), otp_verified_at: data.verifiedAt || new Date().toISOString() }));
+      setToast("✅ OTP validado com sucesso.");
+      setTimeout(() => setToast(null), 2400);
+    } catch (err) {
+      setAssinaturaPublicaErro(String(err.message || err));
+    } finally {
+      setAssinaturaPublicaOtpValidating(false);
+    }
+  };
+
   const now = new Date();
   const atrasados = municipios.filter(
     (m) => m.status === "pendente" && m.activateAt instanceof Date && m.activateAt < now
@@ -3235,12 +3518,44 @@ export default function App() {
   ];
 
   if (assinaturaPublicaAtiva) {
-    const municipioPublico = municipios.find((m) => m.token === assinaturaTokenUrl) || null;
+    const municipioPublicoLocal = municipios.find((m) => m.token === assinaturaTokenUrl) || null;
+    const municipioPublico = municipioPublicoLocal || (assinaturaPublicaMeta
+      ? {
+          id: assinaturaPublicaMeta.id,
+          nome: assinaturaPublicaMeta.nome,
+          email: assinaturaPublicaMeta.email,
+          token: assinaturaPublicaMeta.token,
+          activateAt: assinaturaPublicaMeta.activate_at ? new Date(assinaturaPublicaMeta.activate_at) : new Date(),
+          status: assinaturaPublicaMeta.status,
+          signedAt: assinaturaPublicaMeta.signed_at || null,
+          geo:
+            typeof assinaturaPublicaMeta.geo_lat === "number" && typeof assinaturaPublicaMeta.geo_lon === "number"
+              ? { lat: assinaturaPublicaMeta.geo_lat, lon: assinaturaPublicaMeta.geo_lon }
+              : null,
+          ip: assinaturaPublicaMeta.signer_ip || null,
+          device: assinaturaPublicaMeta.device_info || null,
+          signerCpf: assinaturaPublicaMeta.signer_cpf || null,
+          signerNome: assinaturaPublicaMeta.signer_nome || null,
+          signatureDataUrl: assinaturaPublicaMeta.signature_data_url || null,
+          documentHash: assinaturaPublicaMeta.document_hash || null,
+          otpVerifiedAt: assinaturaPublicaMeta.otp_verified_at || null,
+          tsaUtc: assinaturaPublicaMeta.tsa_utc || null,
+          tsaSource: assinaturaPublicaMeta.tsa_source || null,
+          tsaToken: assinaturaPublicaMeta.tsa_token || null,
+          hash: assinaturaPublicaMeta.hash || null,
+        }
+      : null);
+    const documentoPublicoHtml = assinaturaPublicaDocHtml.trim() || (docHtml || "").trim() || buildManifestacaoTemplate(consorcio.nome || "CONSÓRCIO INTERMUNICIPAL");
     const signDataPublico = municipioPublico
       ? signs[municipioPublico.id] || (municipioPublico.status === "assinado"
         ? {
             nome: "Representante Municipal",
             cargo: "Prefeito(a) Municipal",
+            cpf: municipioPublico.signerCpf ? formatCpf(municipioPublico.signerCpf) : null,
+            assinaturaDataUrl: municipioPublico.signatureDataUrl || null,
+            tsaUtc: municipioPublico.tsaUtc || null,
+            tsaSource: municipioPublico.tsaSource || null,
+            tsaToken: municipioPublico.tsaToken || null,
             at: municipioPublico.signedAt,
             lat: municipioPublico.geo?.lat,
             lon: municipioPublico.geo?.lon,
@@ -3284,6 +3599,9 @@ export default function App() {
               <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.8, marginBottom: 12 }}>
                 Município: <strong style={{ color: "var(--color-text-primary)" }}>{municipioPublico.nome}</strong><br />
                 Assinado em: {new Date(signDataPublico.at).toLocaleString("pt-BR")}<br />
+                CPF: {signDataPublico.cpf || "Não informado"}<br />
+                IP do aparelho: {formatIpDisplay(signDataPublico.ip)}<br />
+                TSA: {signDataPublico.tsaUtc ? `${new Date(signDataPublico.tsaUtc).toLocaleString("pt-BR")} (${signDataPublico.tsaSource || "fonte externa"})` : "não disponível"}<br />
                 Hash: <span style={{ fontFamily: "monospace" }}>{signDataPublico.hash}</span>
               </div>
               <button
@@ -3295,13 +3613,92 @@ export default function App() {
               </button>
             </div>
           )}
+
+          {municipioPublico && !assinaturaPublicaProcessando && municipioPublico.status !== "assinado" && (
+            <div style={{ border: "1px solid var(--color-border-info)", borderRadius: 8, padding: 14, background: "var(--color-background-info)" }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>✍ Assinar documento</div>
+              <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
+                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.6, background: "#fff", border: "1px solid var(--color-border-tertiary)", borderRadius: 6, padding: "10px 12px" }}>
+                  <strong>Hash SHA-256 do documento congelado:</strong><br />
+                  <span style={{ fontFamily: "monospace", fontSize: 11, wordBreak: "break-all" }}>
+                    {municipioPublico.documentHash || "indisponível"}
+                  </span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8 }}>
+                  <input
+                    style={S.input}
+                    placeholder="Código OTP de 6 dígitos"
+                    value={assinaturaPublicaOtpCode}
+                    onChange={(e) => setAssinaturaPublicaOtpCode(String(e.target.value || "").replace(/\D/g, "").slice(0, 6))}
+                  />
+                  <button style={S.btn} onClick={() => enviarOtpPublico(municipioPublico)} disabled={assinaturaPublicaOtpSending}>
+                    {assinaturaPublicaOtpSending ? "⏳ Enviando OTP..." : "📩 Enviar OTP"}
+                  </button>
+                  <button style={S.btn} onClick={() => validarOtpPublico(municipioPublico)} disabled={assinaturaPublicaOtpValidating}>
+                    {assinaturaPublicaOtpValidating ? "⏳ Validando..." : "✅ Validar OTP"}
+                  </button>
+                </div>
+                {assinaturaPublicaOtpVerifiedAt && (
+                  <div style={{ fontSize: 12, color: "var(--color-text-success)" }}>
+                    OTP validado em {new Date(assinaturaPublicaOtpVerifiedAt).toLocaleString("pt-BR")}
+                  </div>
+                )}
+                <input
+                  style={S.input}
+                  placeholder="Nome do signatário"
+                  value={assinaturaPublicaNome}
+                  onChange={(e) => setAssinaturaPublicaNome(e.target.value)}
+                />
+                <input
+                  style={S.input}
+                  placeholder="CPF (somente números)"
+                  value={formatCpf(assinaturaPublicaCpf)}
+                  onChange={(e) => setAssinaturaPublicaCpf(normalizeCpf(e.target.value))}
+                />
+                <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
+                  Desenhe sua assinatura no campo abaixo:
+                </div>
+                <canvas
+                  ref={assinaturaCanvasRef}
+                  onPointerDown={startCanvasStroke}
+                  onPointerMove={moveCanvasStroke}
+                  onPointerUp={endCanvasStroke}
+                  onPointerLeave={endCanvasStroke}
+                  style={{ width: "100%", border: "1px dashed var(--color-border-tertiary)", borderRadius: 6, background: "#fff", touchAction: "none" }}
+                />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button style={S.btn} onClick={clearSignatureCanvas}>🧹 Limpar assinatura</button>
+                </div>
+                <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "var(--color-text-secondary)" }}>
+                  <input
+                    type="checkbox"
+                    checked={assinaturaPublicaAceite}
+                    onChange={(e) => setAssinaturaPublicaAceite(e.target.checked)}
+                  />
+                  Declaro que li o documento acima e confirmo minha assinatura eletrônica neste ato.
+                </label>
+                {assinaturaPublicaErro && (
+                  <div style={{ fontSize: 12, color: "var(--color-text-danger)" }}>
+                    ❌ {assinaturaPublicaErro}
+                  </div>
+                )}
+                <button
+                  style={S.btnPrimary}
+                  onClick={() => assinarDocumentoPublico(municipioPublico)}
+                  disabled={assinaturaPublicaProcessando || !assinaturaPublicaOtpVerifiedAt || !municipioPublico.documentHash}
+                >
+                  ✅ Confirmar assinatura
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
-        {municipioPublico && signDataPublico && (
+        {municipioPublico && (
           <DocPreview
             municipio={municipioPublico.nome}
-            docHtml={docHtml}
-            signData={signDataPublico}
+            docHtml={documentoPublicoHtml}
+            signData={signDataPublico || null}
           />
         )}
 

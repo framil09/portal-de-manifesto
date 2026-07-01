@@ -52,10 +52,6 @@ Usuário inicial (seed):
 - API de auditoria imutável com hash encadeado e assinatura HMAC.
 - Upload de documentos por processo com versionamento automático.
 - Dashboard com filtros por período e secretaria.
-- Alertas de SLA para processos atrasados.
-- Endpoint de disparo de notificação por e-mail (SMTP configurável).
-- Proteções de segurança: rate limit + lock temporário após tentativas de login inválidas.
-
 ### Principais endpoints
 
 - POST /api/auth/login
@@ -85,29 +81,11 @@ npm --prefix backend run backup
 
 - CI automatizado em GitHub Actions com:
 	- build/test frontend
-	- smoke test backend
-
 ### Arquitetura do backend
 
 ```text
 backend/
 ├── src/
-│   ├── server.js      # rotas e middlewares
-│   ├── db.js          # schema SQLite + seed
-│   ├── auth.js        # JWT + controle de perfis
-│   ├── audit.js       # logs imutáveis assinados
-│   └── config.js      # configuração via ambiente
-├── uploads/           # arquivos versionados por processo
-└── data.sqlite        # banco local
-```
-
-## Fluxo recomendado de uso
-
-1. Abra a aba Editor de Documento.
-2. Preencha os dados do consórcio para o timbrado.
-3. Cole o texto do Word no editor.
-4. Clique em `✨ Melhorar texto colado` para limpar e padronizar o HTML.
-5. Clique em `⚖️ Ajustar linguagem formal` para elevar o tom administrativo.
 6. Se quiser começar do zero, use `🧾 Inserir modelo oficial`.
 7. Para contexto de contratação pública, use `🏛 Inserir modelo licitação`.
 8. Clique em `🧩 Preencher campos automáticos`, preencha o formulário no modal e aplique no documento.
@@ -178,11 +156,23 @@ Para ambiente real:
 2. Defina `CORS_ORIGINS` apenas com domínios permitidos.
 3. Configure SMTP para envio real de notificações.
 
-## Envio sem SMTP (recomendado)
+## Envio sem provedor externo
 
-Você pode disparar e-mails sem configurar SMTP usando provedor por API (Resend).
+Se você não quiser usar Resend, Brevo ou outro serviço de API, o backend pode enviar por `sendmail`/MTA local da máquina.
+
+Isso ainda exige que o servidor tenha um agente de e-mail instalado e configurado, como Postfix, Exim ou um binário `sendmail` disponível.
 
 No arquivo `.env` da raiz:
+
+```env
+EMAIL_PROVIDER=sendmail
+SENDMAIL_PATH=/usr/sbin/sendmail
+SMTP_FROM=nao-responda@seudominio.com
+```
+
+Nesse modo, o sistema não depende de `RESEND_API_KEY`, `BREVO_API_KEY` nem de `SMTP_HOST`/`SMTP_USER`/`SMTP_PASS`.
+
+Se preferir, você ainda pode usar provedores externos:
 
 ```env
 EMAIL_PROVIDER=resend
@@ -190,17 +180,43 @@ RESEND_API_KEY=sua_chave_resend
 RESEND_FROM=nao-responda@seudominio.com
 ```
 
-Com isso, o botão de disparo envia pelos e-mails cadastrados sem precisar `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER` e `SMTP_PASS`.
-
-Alternativa gratuita: Brevo (plano free).
-
 ```env
 EMAIL_PROVIDER=brevo
 BREVO_API_KEY=sua_chave_brevo
 BREVO_FROM=seuemail@dominio.com
 ```
 
-No modo `auto`, o backend tenta nesta ordem: `resend` -> `brevo` -> `smtp`.
+No modo `auto`, o backend tenta nesta ordem: `sendmail` -> `smtp` -> `brevo` -> `resend`.
+
+### SMTP com OAuth2 (Gmail)
+
+Se você preferir usar OAuth2 no SMTP (sem senha de app), configure:
+
+```env
+EMAIL_PROVIDER=smtp
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_AUTH_TYPE=oauth2
+SMTP_USER=seu-email@gmail.com
+SMTP_OAUTH_CLIENT_ID=seu_google_client_id
+SMTP_OAUTH_CLIENT_SECRET=seu_google_client_secret
+SMTP_OAUTH_REFRESH_TOKEN=seu_google_refresh_token
+SMTP_FROM=seu-email@gmail.com
+```
+
+Observação: apenas o `client_id` não é suficiente para envio. Também são necessários `client_secret` e `refresh_token`.
+
+## Assinatura pública com evidências
+
+Quando a pessoa clica no link de assinatura, o backend registra o ato com:
+
+- data e hora
+- IP de origem
+- geolocalização enviada pelo navegador
+- dispositivo / user-agent
+- hash de integridade da assinatura
+
+Esses dados ficam gravados na tabela de municípios e na auditoria do sistema.
 
 ## Licença
 
