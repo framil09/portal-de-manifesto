@@ -45,7 +45,8 @@ function gerarToken(nome) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  const base = btoa(`manifestacao-assinatura:${normalized}`)
+  // Prefixo curto ("ms:") para que a parte única do nome apareça nos primeiros 20 chars
+  const base = btoa(`ms:${normalized}`)
     .replace(/[^a-zA-Z0-9]/g, "")
     .toUpperCase();
   return (base || "MUNICIPIO").slice(0, 20);
