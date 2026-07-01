@@ -353,9 +353,11 @@ const LICITACAO_AUTO_FIELDS = [
   },
 ];
 
-const LICITACAO_STORAGE_KEY = "manifestacao.licitacaoForm.v1";
+const LICITACAO_STORAGE_KEY  = "manifestacao.licitacaoForm.v1";
 const MUNICIPIOS_STORAGE_KEY = "manifestacao.municipios.v1";
-const AUDITORIA_STORAGE_KEY = "manifestacao.auditoria.v1";
+const AUDITORIA_STORAGE_KEY  = "manifestacao.auditoria.v1";
+const CONSORCIO_STORAGE_KEY  = "manifestacao.consorcio.v1";
+const DOC_STORAGE_KEY        = "manifestacao.docHtml.v1";
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "http://localhost:4000";
 
 function buildAssinaturaLink(token) {
@@ -615,6 +617,7 @@ const S = {
     display: "flex", gap: 2,
     borderBottom: "0.5px solid var(--color-border-tertiary)",
     marginBottom: "1.5rem", overflowX: "auto",
+    scrollbarWidth: "none", msOverflowStyle: "none",
   },
   tab: (active) => ({
     padding: "9px 18px", fontSize: 13, cursor: "pointer",
@@ -664,9 +667,9 @@ const S = {
   },
   badge: (status) => {
     const map = {
-      pendente: { bg: "var(--color-background-warning)", c: "var(--color-text-warning)" },
-      enviado:  { bg: "var(--color-background-info)",    c: "var(--color-text-info)" },
-      assinado: { bg: "var(--color-background-success)", c: "var(--color-text-success)" },
+      pendente: { bg: "var(--color-background-secondary)", c: "var(--color-text-tertiary)" },
+      enviado:  { bg: "var(--color-background-info)",      c: "var(--color-text-info)" },
+      assinado: { bg: "var(--color-background-success)",   c: "var(--color-text-success)" },
     };
     const { bg, c } = map[status] || map.pendente;
     return {
@@ -819,18 +822,27 @@ function RichEditor({ value, onChange, placeholder }) {
   return (
     <div>
       <div style={S.editorToolbar}>
+        {/* Texto */}
         <TBtn cmd="bold"               label="N"        title="Negrito (Ctrl+B)" />
         <TBtn cmd="italic"             label="I"        title="Itálico (Ctrl+I)" />
         <TBtn cmd="underline"          label="S"        title="Sublinhado (Ctrl+U)" />
+        <span style={{ width: 1, background: "var(--color-border-tertiary)", alignSelf: "stretch", margin: "0 2px" }} />
+        {/* Alinhamento */}
         <TBtn cmd="justifyLeft"        label="⟵"       title="Alinhar à esquerda" />
         <TBtn cmd="justifyCenter"      label="↔"        title="Centralizar" />
         <TBtn cmd="justifyRight"       label="⟶"       title="Alinhar à direita" />
         <TBtn cmd="justifyFull"        label="≡"        title="Justificar" />
+        <span style={{ width: 1, background: "var(--color-border-tertiary)", alignSelf: "stretch", margin: "0 2px" }} />
+        {/* Listas */}
         <TBtn cmd="insertUnorderedList" label="• Lista" title="Lista com marcadores" />
         <TBtn cmd="insertOrderedList"  label="1. Lista" title="Lista numerada" />
+        <span style={{ width: 1, background: "var(--color-border-tertiary)", alignSelf: "stretch", margin: "0 2px" }} />
+        {/* Estilo de parágrafo */}
         <TBtn cmd="formatBlock" val="h2" label="Título" title="Título" />
         <TBtn cmd="formatBlock" val="h3" label="Subtítulo" title="Subtítulo" />
         <TBtn cmd="formatBlock" val="p"  label="¶ Normal" title="Parágrafo normal" />
+        <span style={{ width: 1, background: "var(--color-border-tertiary)", alignSelf: "stretch", margin: "0 2px" }} />
+        {/* Inserir */}
         <button
           onMouseDown={(e) => { e.preventDefault(); insertTable(); }}
           title="Inserir tabela"
@@ -1304,7 +1316,9 @@ export default function App() {
   const [tab, setTab] = useState("editor");
   const [municipios, setMunicipios] = useState(initialMunicipios);
   const [search, setSearch] = useState("");
+  const [muniPage, setMuniPage] = useState(0);
   const [docHtml, setDocHtml] = useState("");
+  const [docSavedAt, setDocSavedAt] = useState(null);
   const [consorcio, setConsorcio] = useState({
     nome: "", sigla: "", cnpj: "", endereco: "", site: "", email: "", logo: "",
   });
@@ -1600,6 +1614,43 @@ export default function App() {
       // Ignora erro de persistência (ex.: storage indisponível).
     }
   }, [licitacaoForm]);
+
+  // ── Persistência do consórcio ────────────────────────────────────────────
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(CONSORCIO_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        setConsorcio((prev) => ({ ...prev, ...parsed }));
+      }
+    } catch { /* ignora */ }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CONSORCIO_STORAGE_KEY, JSON.stringify(consorcio));
+    } catch { /* ignora */ }
+  }, [consorcio]);
+
+  // ── Persistência do documento ────────────────────────────────────────────
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(DOC_STORAGE_KEY);
+      if (raw) setDocHtml(raw);
+    } catch { /* ignora */ }
+  }, []);
+
+  useEffect(() => {
+    if (!docHtml) return;
+    const timer = setTimeout(() => {
+      try {
+        window.localStorage.setItem(DOC_STORAGE_KEY, docHtml);
+        setDocSavedAt(new Date());
+      } catch { /* ignora */ }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [docHtml]);
 
   const showToast = useCallback((msg, dur = 2800) => {
     setToast(msg);
@@ -2368,6 +2419,9 @@ export default function App() {
   const filtered = municipios.filter((m) =>
     m.nome.toLowerCase().includes(search.toLowerCase())
   );
+  const MUNI_PAGE_SIZE = 10;
+  const muniTotalPages = Math.ceil(filtered.length / MUNI_PAGE_SIZE);
+  const filteredPage = filtered.slice(muniPage * MUNI_PAGE_SIZE, (muniPage + 1) * MUNI_PAGE_SIZE);
   const allFilteredSelected =
     filtered.length > 0 && filtered.every((m) => selecionados.includes(m.id));
 
@@ -3724,6 +3778,7 @@ export default function App() {
           style={{ ...S.btnPrimary, marginLeft: "auto" }}
           onClick={() => setModal("enviar-todos")}
           disabled={!podeEnviarLinks}
+          title={!podeEnviarLinks ? "Avance o workflow para a etapa 'Envio' para habilitar o disparo em massa" : "Disparar links de assinatura para todos os municípios"}
         >
           📨 Enviar para todos
         </button>
@@ -4246,7 +4301,14 @@ export default function App() {
       {tab === "editor" && (
         <div>
           <div style={S.card}>
-            <div style={S.sectionTitle}>Dados do consórcio (timbrado do documento)</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <div style={{ ...S.sectionTitle, marginBottom: 0 }}>Dados do consórcio (timbrado do documento)</div>
+              {consorcio.nome && (
+                <span style={{ fontSize: 11, color: "var(--color-text-success)", display: "flex", alignItems: "center", gap: 4 }}>
+                  ✓ Dados salvos
+                </span>
+              )}
+            </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               {[
                 ["nome",     "Nome completo do consórcio"],
@@ -4274,7 +4336,14 @@ export default function App() {
               display: "flex", alignItems: "center",
               justifyContent: "space-between", marginBottom: 10,
             }}>
-              <div style={S.sectionTitle}>Corpo do documento</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ ...S.sectionTitle, marginBottom: 0 }}>Corpo do documento</div>
+                {docSavedAt && (
+                  <span style={{ fontSize: 10, color: "var(--color-text-success)" }}>
+                    ✓ Salvo às {docSavedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                )}
+              </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <button
                   style={S.btn}
@@ -4471,7 +4540,7 @@ export default function App() {
               style={{ ...S.input, maxWidth: 300 }}
               placeholder="Buscar município..."
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => { setSearch(e.target.value); setMuniPage(0); }}
             />
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginLeft: "auto" }}>
               Horários de ativação escalonados automaticamente
@@ -4500,10 +4569,10 @@ export default function App() {
           </div>
 
           <div style={S.card}>
-            <div style={{ maxHeight: 520, overflowY: "auto" }}>
+            <div>
               <div style={{
                 display: "grid",
-                gridTemplateColumns: "28px 1fr 140px 90px 130px",
+                gridTemplateColumns: "28px 1fr 140px 90px 180px",
                 gap: 8, padding: "6px 0",
                 fontSize: 11, color: "var(--color-text-tertiary)",
                 borderBottom: "0.5px solid var(--color-border-tertiary)",
@@ -4517,12 +4586,12 @@ export default function App() {
                 <span style={{ textAlign: "center" }}>Status</span>
                 <span style={{ textAlign: "center" }}>Ações</span>
               </div>
-              {filtered.map((m) => (
+              {filteredPage.map((m) => (
                 <div
                   key={m.id}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "28px 1fr 140px 90px 130px",
+                    gridTemplateColumns: "28px 1fr 140px 90px 180px",
                     alignItems: "center", gap: 8,
                     padding: "9px 0",
                     borderBottom: "0.5px solid var(--color-border-tertiary)",
@@ -4556,31 +4625,35 @@ export default function App() {
                         : "Assinado"}
                     </span>
                   </div>
-                  <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
+                  <div style={{ display: "flex", gap: 3, justifyContent: "center", flexWrap: "wrap" }}>
                     <button
                       style={S.btnSm}
                       onClick={() => copyLink(m)}
+                      aria-label="Copiar link de assinatura"
                       title="Copiar link"
                     >
-                      🔗
+                      🔗 Link
                     </button>
                     <button
                       style={S.btnSm}
                       onClick={() => { setSelectedMuni(m); setTab("assinatura"); }}
+                      aria-label="Simular assinatura"
                       title="Simular assinatura"
                     >
-                      ✍
+                      ✍ Ass.
                     </button>
                     <button
                       style={S.btnSm}
                       onClick={() => iniciarEdicaoMunicipio(m)}
+                      aria-label="Editar município"
                       title="Editar município"
                     >
-                      ✏️
+                      ✏️ Edit.
                     </button>
                     <button
                       style={{ ...S.btnSm, color: "var(--color-text-danger)" }}
                       onClick={() => excluirMunicipio(m)}
+                      aria-label="Excluir município"
                       title="Excluir município"
                     >
                       🗑️
@@ -4589,15 +4662,38 @@ export default function App() {
                       <button
                         style={{ ...S.btnSm, color: "var(--color-text-info)" }}
                         onClick={() => enviarUm(m.id)}
+                        aria-label="Enviar link de assinatura"
                         title="Enviar link"
                       >
-                        📨
+                        📨 Env.
                       </button>
                     )}
                   </div>
                 </div>
               ))}
             </div>
+            {/* Paginação */}
+            {muniTotalPages > 1 && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 12, paddingTop: 10, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                <button
+                  style={{ ...S.btnSm, opacity: muniPage === 0 ? 0.4 : 1 }}
+                  disabled={muniPage === 0}
+                  onClick={() => setMuniPage((p) => p - 1)}
+                >
+                  ‹ Anterior
+                </button>
+                <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
+                  Página {muniPage + 1} de {muniTotalPages} ({filtered.length} municípios)
+                </span>
+                <button
+                  style={{ ...S.btnSm, opacity: muniPage >= muniTotalPages - 1 ? 0.4 : 1 }}
+                  disabled={muniPage >= muniTotalPages - 1}
+                  onClick={() => setMuniPage((p) => p + 1)}
+                >
+                  Próxima ›
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
