@@ -2394,10 +2394,12 @@ export default function App() {
   };
 
   const enviarSelecionados = async () => {
+    // Auto-advance to "envio" stage if not already there
     if (!podeEnviarLinks) {
-      showToast("⚠️ Avance o fluxo para a etapa de Envio antes de disparar links");
-      return;
+      setEtapaFluxo("envio");
+      registrarAuditoria("fluxo.auto_advance", "Mudança automática para 'Envio' ao iniciar envio selecionado");
     }
+    
     if (selecionados.length === 0) {
       showToast("⚠️ Selecione ao menos um município");
       return;
@@ -2445,6 +2447,12 @@ export default function App() {
   };
 
   const dispararAssinaturaPeloEditor = async () => {
+    // Auto-advance to "envio" stage if not already there
+    if (!podeEnviarLinks) {
+      setEtapaFluxo("envio");
+      registrarAuditoria("fluxo.auto_advance", "Mudança automática para 'Envio' ao disparar pelo editor");
+    }
+
     const selecionadosSet = new Set(editorVinculosSelecionados);
     const alvo = municipios.filter((m) => selecionadosSet.has(m.id));
 
@@ -2625,36 +2633,55 @@ export default function App() {
   }, [docHtml, consorcio.nome]);
 
   const buildEmailHtmlTimbrado = useCallback((muni, linkAssinatura, corpoDocumento) => {
-    const headerSrc = "cid:timbrado-header";
-    const footerSrc = "cid:timbrado-footer";
+    const headerSrc = `cid:timbrado-header`;
+    const footerSrc = `cid:timbrado-footer`;
 
-    return [
-      `<div style="font-family:Segoe UI, Arial, sans-serif;background:#eef3f9;padding:20px;color:#1f2937;">`,
-      `<div style="max-width:860px;margin:0 auto;background:#ffffff;border:1px solid #d8e3ef;border-radius:10px;overflow:hidden;">`,
-      `<div style="padding:0;background:#ffffff;border-bottom:1px solid #e5edf5;">`,
-      `<img src="${headerSrc}" alt="Timbrado institucional" style="display:block;width:100%;max-height:130px;object-fit:cover;"/>`,
-      `</div>`,
-      `<div style="padding:22px 24px 16px;line-height:1.6;">`,
-      `<h2 style="margin:0 0 10px;font-size:20px;color:#0f4c81;">Manifestação de Interesse para Assinatura</h2>`,
-      `<p style="margin:0 0 8px;">Prezado(a),</p>`,
-      `<p style="margin:0 0 8px;">Este e-mail contém o documento completo para análise e assinatura eletrônica.</p>`,
-      `<p style="margin:0 0 6px;"><strong>Município:</strong> ${muni.nome}</p>`,
-      `<p style="margin:0 0 4px;"><strong>Emissão:</strong> ${new Date().toLocaleString("pt-BR")}</p>`,
-      `<div style="margin:16px 0 18px;padding:12px 14px;background:#f2f6fb;border:1px solid #d8e3ef;border-radius:8px;">`,
-      `<p style="margin:0 0 8px;font-size:13px;color:#1f2937;"><strong>Ação necessária:</strong> clique no botão abaixo para assinar eletronicamente.</p>`,
-      `<p style="margin:0;"><a href="${linkAssinatura}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:10px 14px;border-radius:6px;background:#0f4c81;color:#ffffff;text-decoration:none;font-weight:600;">Assinar documento</a></p>`,
-      `</div>`,
-      `<div style="margin-top:16px;padding:16px;border:1px solid #d8e3ef;border-radius:8px;background:#fcfdff;">`,
-      `<p style="margin:0 0 10px;font-size:13px;color:#4b5563;"><strong>Documento na íntegra</strong></p>`,
-      corpoDocumento || `<p><em>Documento não informado no momento do disparo.</em></p>`,
-      `</div>`,
-      `</div>`,
-      `<div style="padding:0;border-top:1px solid #e5edf5;background:#ffffff;">`,
-      `<img src="${footerSrc}" alt="Rodapé institucional" style="display:block;width:100%;max-height:95px;object-fit:cover;"/>`,
-      `</div>`,
-      `</div>`,
-      `</div>`,
-    ].join("");
+    const linkBlock = linkAssinatura
+      ? `
+      <div style="margin:20px 0;padding:14px 16px;background:#f2f6fb;border:1px solid #d8e3ef;border-radius:8px;">
+        <p style="margin:0 0 10px;font-size:13px;color:#1f2937;"><strong>Ação necessária:</strong> clique no botão abaixo para assinar eletronicamente.</p>
+        <p style="margin:0;"><a href="${linkAssinatura}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:12px 28px;border-radius:6px;background:#0f4c81;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;">✍️ Acessar e Assinar o Documento</a></p>
+      </div>
+      <p style="margin:4px 0 0;font-size:11px;color:#888;">Link direto: <a href="${linkAssinatura}" style="color:#0f4c81;">${linkAssinatura}</a><br>Este link é exclusivo para ${muni.nome}. Não compartilhe com terceiros.</p>
+    `
+      : "";
+
+    return `
+    <div style="font-family:Segoe UI, Arial, sans-serif;background:#eef3f9;padding:20px;color:#1f2937;">
+      <div style="max-width:860px;margin:0 auto;background:#ffffff;border:1px solid #d8e3ef;border-radius:10px;overflow:hidden;">
+
+        <!-- Timbrado CIMAG (logo) -->
+        <div style="padding:0;background:#ffffff;border-bottom:1px solid #e5edf5;">
+          <img src="${headerSrc}" alt="CIMAG – Consórcio Intermunicipal Multifinalitário da Microrregião do Circuito das Águas" style="display:block;width:100%;max-height:130px;object-fit:cover;"/>
+        </div>
+
+        <div style="padding:24px 28px 20px;line-height:1.65;">
+          <h2 style="margin:0 0 4px;font-size:19px;color:#0f4c81;">Manifestação de Interesse — CIMAG</h2>
+          <p style="margin:0 0 16px;font-size:12px;color:#6b7280;">Consórcio Intermunicipal Multifinalitário da Microrregião do Circuito das Águas · CNPJ 21.406.451/0001-01</p>
+
+          <p style="margin:0 0 8px;">Prezado(a) Representante de <strong>${muni.nome}</strong>,</p>
+          <p style="margin:0 0 14px;">O <strong>CIMAG</strong> encaminha o documento de <strong>Manifestação de Interesse</strong> para análise e assinatura eletrônica.</p>
+
+          <table style="border-collapse:collapse;background:#f8fafc;border:1px solid #d8e3ef;border-radius:6px;width:100%;margin-bottom:4px;">
+            <tr><td style="padding:8px 14px;font-size:13px;border-bottom:1px solid #e5edf5;"><strong>Município:</strong></td><td style="padding:8px 14px;font-size:13px;border-bottom:1px solid #e5edf5;">${muni.nome}</td></tr>
+            <tr><td style="padding:8px 14px;font-size:13px;border-bottom:1px solid #e5edf5;"><strong>Emissão:</strong></td><td style="padding:8px 14px;font-size:13px;border-bottom:1px solid #e5edf5;">${new Date().toLocaleString("pt-BR")}</td></tr>
+            <tr><td style="padding:8px 14px;font-size:13px;"><strong>Contato:</strong></td><td style="padding:8px 14px;font-size:13px;"><a href="mailto:secretaria@cimag.org.br" style="color:#0f4c81;">secretaria@cimag.org.br</a> · <a href="https://www.cimag.org.br" style="color:#0f4c81;">www.cimag.org.br</a></td></tr>
+          </table>
+
+          <div style="margin:10px 0 4px;padding:12px 14px;background:#fff8e1;border:1px solid #f5c518;border-radius:6px;font-size:13px;">
+            <strong>⚠️ Atenção:</strong> Ao clicar no botão abaixo, você concorda com a captura de data/hora, geolocalização, IP e identificação do aparelho para fins de assinatura eletrônica com validade jurídica.
+          </div>
+
+          ${linkBlock}
+        </div>
+
+        <!-- Rodapé CIMAG -->
+        <div style="padding:0;border-top:1px solid #e5edf5;background:#ffffff;">
+          <img src="${footerSrc}" alt="Rodapé CIMAG" style="display:block;width:100%;max-height:95px;object-fit:cover;"/>
+        </div>
+      </div>
+    </div>
+  `;
   }, []);
 
   const enviarEmailAssinaturaApi = useCallback(
@@ -2789,9 +2816,10 @@ export default function App() {
   );
 
   const enviarUm = async (id) => {
+    // Auto-advance to "envio" stage if not already there
     if (!podeEnviarLinks) {
-      showToast("⚠️ Avance o fluxo para a etapa de Envio antes de disparar links");
-      return;
+      setEtapaFluxo("envio");
+      registrarAuditoria("fluxo.auto_advance", "Mudança automática para 'Envio' ao iniciar envio");
     }
 
     const muni = municipios.find((m) => m.id === id);
@@ -2817,9 +2845,10 @@ export default function App() {
   };
 
   const enviarTodos = async () => {
+    // Auto-advance to "envio" stage if not already there
     if (!podeEnviarLinks) {
-      showToast("⚠️ Avance o fluxo para a etapa de Envio antes de disparar links");
-      return;
+      setEtapaFluxo("envio");
+      registrarAuditoria("fluxo.auto_advance", "Mudança automática para 'Envio' ao iniciar envio em massa");
     }
 
     setModal(null);
@@ -3676,8 +3705,7 @@ export default function App() {
         <button
           style={{ ...S.btnPrimary, marginLeft: "auto" }}
           onClick={() => setModal("enviar-todos")}
-          disabled={!podeEnviarLinks}
-          title={!podeEnviarLinks ? "Avance o workflow para a etapa 'Envio' para habilitar o disparo em massa" : "Disparar links de assinatura para todos os municípios"}
+          title="Disparar links de assinatura para todos os municípios"
         >
           📨 Enviar para todos
         </button>
@@ -3721,44 +3749,6 @@ export default function App() {
         </div>
         <div style={S.progress}>
           <div style={S.progressFill(pct)} />
-        </div>
-      </div>
-
-      <div style={{ ...S.card, marginBottom: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 8 }}>
-          <div style={S.sectionTitle}>Workflow de aprovação</div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button style={S.btn} onClick={exportarRelatorioCsv}>📥 Exportar relatório (CSV)</button>
-            <button
-              style={S.btn}
-              onClick={sincronizarEtapaFluxoNoProcessoApi}
-              disabled={!apiUser || !apiProcessoSelecionadoId}
-              title={apiProcessoSelecionadoId ? "Atualiza o status do processo selecionado na API" : "Selecione um processo no painel API"}
-            >
-              🔄 Sincronizar etapa na API
-            </button>
-          </div>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 8 }}>
-          {ETAPAS_FLUXO.map((etapa, idx) => {
-            const active = etapa.id === etapaFluxo;
-            const done = idx < idxEtapaFluxo;
-            return (
-              <button
-                key={etapa.id}
-                onClick={() => mudarEtapaFluxo(etapa.id)}
-                style={{
-                  ...S.btn,
-                  justifyContent: "center",
-                  borderColor: active ? "var(--color-border-info)" : "var(--color-border-tertiary)",
-                  background: active ? "var(--color-background-info)" : done ? "var(--color-background-success)" : "var(--color-background-primary)",
-                  color: active ? "var(--color-text-info)" : done ? "var(--color-text-success)" : "var(--color-text-secondary)",
-                }}
-              >
-                {done ? `✓ ${idx + 1}.` : active ? `► ${idx + 1}.` : `${idx + 1}.`} {etapa.label}
-              </button>
-            );
-          })}
         </div>
       </div>
 
