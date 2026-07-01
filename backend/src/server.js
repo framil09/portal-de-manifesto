@@ -220,36 +220,46 @@ function buildSignatureEmailHtml({ municipio, linkAssinatura, documentoHtml }) {
 
   const linkBlock = linkAssinatura
     ? `
-      <div style="margin:16px 0 18px;padding:12px 14px;background:#f2f6fb;border:1px solid #d8e3ef;border-radius:8px;">
-        <p style="margin:0 0 8px;font-size:13px;color:#1f2937;"><strong>Ação necessária:</strong> clique no botão abaixo para assinar eletronicamente.</p>
-        <p style="margin:0;"><a href="${linkAssinatura}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:10px 14px;border-radius:6px;background:#0f4c81;color:#ffffff;text-decoration:none;font-weight:600;">Assinar documento</a></p>
+      <div style="margin:20px 0;padding:14px 16px;background:#f2f6fb;border:1px solid #d8e3ef;border-radius:8px;">
+        <p style="margin:0 0 10px;font-size:13px;color:#1f2937;"><strong>Ação necessária:</strong> clique no botão abaixo para assinar eletronicamente.</p>
+        <p style="margin:0;"><a href="${linkAssinatura}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:12px 28px;border-radius:6px;background:#0f4c81;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;">✍️ Acessar e Assinar o Documento</a></p>
       </div>
+      <p style="margin:4px 0 0;font-size:11px;color:#888;">Link direto: <a href="${linkAssinatura}" style="color:#0f4c81;">${linkAssinatura}</a><br>Este link é exclusivo para ${municipio}. Não compartilhe com terceiros.</p>
     `
     : "";
 
   return `
     <div style="font-family:Segoe UI, Arial, sans-serif;background:#eef3f9;padding:20px;color:#1f2937;">
       <div style="max-width:860px;margin:0 auto;background:#ffffff;border:1px solid #d8e3ef;border-radius:10px;overflow:hidden;">
+
+        <!-- Timbrado CIMAG (logo) -->
         <div style="padding:0;background:#ffffff;border-bottom:1px solid #e5edf5;">
-          <img src="${headerSrc}" alt="Timbrado institucional" style="display:block;width:100%;max-height:130px;object-fit:cover;"/>
+          <img src="${headerSrc}" alt="CIMAG – Consórcio Intermunicipal Multifinalitário da Microrregião do Circuito das Águas" style="display:block;width:100%;max-height:130px;object-fit:cover;"/>
         </div>
 
-        <div style="padding:22px 24px 16px;line-height:1.6;">
-          <h2 style="margin:0 0 10px;font-size:20px;color:#0f4c81;">Manifestação de Interesse para Assinatura</h2>
-          <p style="margin:0 0 8px;">Prezado(a),</p>
-          <p style="margin:0 0 8px;">Este e-mail contém o documento completo para análise e assinatura eletrônica.</p>
-          <p style="margin:0 0 6px;"><strong>Município:</strong> ${municipio}</p>
-          <p style="margin:0 0 4px;"><strong>Emissão:</strong> ${new Date().toLocaleString("pt-BR")}</p>
-          ${linkBlock}
+        <div style="padding:24px 28px 20px;line-height:1.65;">
+          <h2 style="margin:0 0 4px;font-size:19px;color:#0f4c81;">Manifestação de Interesse — CIMAG</h2>
+          <p style="margin:0 0 16px;font-size:12px;color:#6b7280;">Consórcio Intermunicipal Multifinalitário da Microrregião do Circuito das Águas · CNPJ 21.406.451/0001-01</p>
 
-          <div style="margin-top:16px;padding:16px;border:1px solid #d8e3ef;border-radius:8px;background:#fcfdff;">
-            <p style="margin:0 0 10px;font-size:13px;color:#4b5563;"><strong>Documento na íntegra</strong></p>
-            ${documentoHtml}
+          <p style="margin:0 0 8px;">Prezado(a) Representante de <strong>${municipio}</strong>,</p>
+          <p style="margin:0 0 14px;">O <strong>CIMAG</strong> encaminha o documento de <strong>Manifestação de Interesse</strong> para análise e assinatura eletrônica.</p>
+
+          <table style="border-collapse:collapse;background:#f8fafc;border:1px solid #d8e3ef;border-radius:6px;width:100%;margin-bottom:4px;">
+            <tr><td style="padding:8px 14px;font-size:13px;border-bottom:1px solid #e5edf5;"><strong>Município:</strong></td><td style="padding:8px 14px;font-size:13px;border-bottom:1px solid #e5edf5;">${municipio}</td></tr>
+            <tr><td style="padding:8px 14px;font-size:13px;border-bottom:1px solid #e5edf5;"><strong>Emissão:</strong></td><td style="padding:8px 14px;font-size:13px;border-bottom:1px solid #e5edf5;">${new Date().toLocaleString("pt-BR")}</td></tr>
+            <tr><td style="padding:8px 14px;font-size:13px;"><strong>Contato:</strong></td><td style="padding:8px 14px;font-size:13px;"><a href="mailto:secretaria@cimag.org.br" style="color:#0f4c81;">secretaria@cimag.org.br</a> · <a href="https://www.cimag.org.br" style="color:#0f4c81;">www.cimag.org.br</a></td></tr>
+          </table>
+
+          <div style="margin:10px 0 4px;padding:12px 14px;background:#fff8e1;border:1px solid #f5c518;border-radius:6px;font-size:13px;">
+            <strong>⚠️ Atenção:</strong> Ao clicar no botão abaixo, você concorda com a captura de data/hora, geolocalização, IP e identificação do aparelho para fins de assinatura eletrônica com validade jurídica.
           </div>
+
+          ${linkBlock}
         </div>
 
+        <!-- Rodapé CIMAG -->
         <div style="padding:0;border-top:1px solid #e5edf5;background:#ffffff;">
-          <img src="${footerSrc}" alt="Rodapé institucional" style="display:block;width:100%;max-height:95px;object-fit:cover;"/>
+          <img src="${footerSrc}" alt="Rodapé CIMAG" style="display:block;width:100%;max-height:95px;object-fit:cover;"/>
         </div>
       </div>
     </div>
