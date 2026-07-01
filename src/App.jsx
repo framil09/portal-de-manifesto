@@ -405,6 +405,12 @@ function getAssinaturaTokenFromUrl() {
   return queryToken ? decodeURIComponent(queryToken) : "";
 }
 
+function getAssinaturaAutoMode() {
+  const hash = window.location.hash || "";
+  const search = new URLSearchParams(hash.split("?")[1] || window.location.search);
+  return search.get("auto") === "1" || search.get("mode") === "auto";
+}
+
 const EMAIL_INSTITUCIONAL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
 const DOMINIOS_PESSOAIS_BLOQUEADOS = [
   "gmail.com",
@@ -1286,6 +1292,7 @@ export default function App() {
   const [assinaturaPublicaOtpVerifiedAt, setAssinaturaPublicaOtpVerifiedAt] = useState("");
   const [assinaturaPublicaOtpSending, setAssinaturaPublicaOtpSending] = useState(false);
   const [assinaturaPublicaOtpValidating, setAssinaturaPublicaOtpValidating] = useState(false);
+  const [assinaturaAutoMode, setAssinaturaAutoMode] = useState(getAssinaturaAutoMode());
   const assinaturaCanvasRef = useRef(null);
   const assinaturaCanvasDrawingRef = useRef(false);
   const tabBarRef = useRef(null);
@@ -3262,23 +3269,43 @@ export default function App() {
   const assinarDocumentoPublico = async (municipioPublico) => {
     if (!municipioPublico) return;
 
-    const cpfNormalizado = normalizeCpf(assinaturaPublicaCpf);
-    if (!isValidCpf(cpfNormalizado)) {
-      setAssinaturaPublicaErro("Informe um CPF válido para assinar.");
-      return;
+    // Modo automático: não valida campos
+    let cpfNormalizado = normalizeCpf(assinaturaPublicaCpf);
+    let assinaturaDataUrlFinal = assinaturaPublicaAssinaturaDataUrl;
+    let nomeFinal = assinaturaPublicaNome.trim() || "Representante Municipal";
+
+    if (!assinaturaAutoMode) {
+      if (!isValidCpf(cpfNormalizado)) {
+        setAssinaturaPublicaErro("Informe um CPF válido para assinar.");
+        return;
+      }
+      if (!assinaturaPublicaAssinaturaDataUrl) {
+        setAssinaturaPublicaErro("Desenhe a assinatura no campo indicado antes de continuar.");
+        return;
+      }
+      if (!assinaturaPublicaAceite) {
+        setAssinaturaPublicaErro("Confirme o aceite dos termos para concluir a assinatura.");
+        return;
+      }
+    } else {
+      // Modo automático: gera assinatura dummy
+      const canvas = document.createElement("canvas");
+      canvas.width = 200;
+      canvas.height = 60;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.strokeStyle = "#1a1a1a";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(10, 40);
+        ctx.quadraticCurveTo(100, 10, 190, 40);
+        ctx.stroke();
+        assinaturaDataUrlFinal = canvas.toDataURL("image/png");
+      }
+      cpfNormalizado = "00000000000";
+      nomeFinal = "Auto-assinatura";
     }
-    if (!assinaturaPublicaAssinaturaDataUrl) {
-      setAssinaturaPublicaErro("Desenhe a assinatura no campo indicado antes de continuar.");
-      return;
-    }
-    if (!assinaturaPublicaAceite) {
-      setAssinaturaPublicaErro("Confirme o aceite dos termos para concluir a assinatura.");
-      return;
-    }
-    if (!assinaturaPublicaOtpVerifiedAt) {
-      setAssinaturaPublicaErro("Valide o código OTP de 6 dígitos antes de assinar.");
-      return;
-    }
+
     if (!municipioPublico.documentHash) {
       setAssinaturaPublicaErro("Hash do documento indisponível. Reabra o link enviado por e-mail.");
       return;
@@ -3314,8 +3341,8 @@ export default function App() {
           otpCode: assinaturaPublicaOtpCode,
           documentHash: municipioPublico.documentHash,
           cpf: cpfNormalizado,
-          signerNome: assinaturaPublicaNome.trim() || "Representante Municipal",
-          assinaturaDataUrl: assinaturaPublicaAssinaturaDataUrl,
+          signerNome: nomeFinal,
+          assinaturaDataUrl: assinaturaDataUrlFinal,
           lat: geo.lat,
           lon: geo.lon,
           device,
@@ -3410,6 +3437,12 @@ export default function App() {
 
       setToast(`✅ Assinatura registrada para ${signedMunicipio.nome}.`);
       setTimeout(() => setToast(null), 3200);
+      
+      // Limpa o canvas de assinatura após sucesso
+      clearSignatureCanvas();
+      setAssinaturaPublicaNome("");
+      setAssinaturaPublicaCpf("");
+      setAssinaturaPublicaAceite(false);
     } catch (err) {
       setAssinaturaPublicaErro(String(err.message || err));
     } finally {
@@ -3592,7 +3625,29 @@ export default function App() {
             </div>
           )}
 
-          {municipioPublico && !assinaturaPublicaProcessando && municipioPublico.status !== "assinado" && (
+          {municipioPublico && !assinaturaPublicaProcessando && municipioPublico.status !== "assinado" && assinaturaAutoMode && (
+            <div style={{ border: "1px solid var(--color-border-success)", borderRadius: 8, padding: 14, background: "var(--color-background-success)" }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>✍ Modo de auto-assinatura</div>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12, lineHeight: 1.6 }}>
+                O documento será assinado automaticamente com seus dados de geolocalização, endereço IP e informações do device.
+              </div>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.6, background: "#fff", border: "1px solid var(--color-border-tertiary)", borderRadius: 6, padding: "10px 12px", marginBottom: 12 }}>
+                <strong>Hash SHA-256 do documento congelado:</strong><br />
+                <span style={{ fontFamily: "monospace", fontSize: 11, wordBreak: "break-all" }}>
+                  {municipioPublico.documentHash || "indisponível"}
+                </span>
+              </div>
+              <button
+                style={S.btnPrimary}
+                onClick={() => assinarDocumentoPublico(municipioPublico)}
+                disabled={assinaturaPublicaProcessando || !municipioPublico.documentHash}
+              >
+                ✅ Assinar agora
+              </button>
+            </div>
+          )}
+
+          {municipioPublico && !assinaturaPublicaProcessando && municipioPublico.status !== "assinado" && !assinaturaAutoMode && (
             <div style={{ border: "1px solid var(--color-border-info)", borderRadius: 8, padding: 14, background: "var(--color-background-info)" }}>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>✍ Assinar documento</div>
               <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
@@ -3602,25 +3657,7 @@ export default function App() {
                     {municipioPublico.documentHash || "indisponível"}
                   </span>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8 }}>
-                  <input
-                    style={S.input}
-                    placeholder="Código OTP de 6 dígitos"
-                    value={assinaturaPublicaOtpCode}
-                    onChange={(e) => setAssinaturaPublicaOtpCode(String(e.target.value || "").replace(/\D/g, "").slice(0, 6))}
-                  />
-                  <button style={S.btn} onClick={() => enviarOtpPublico(municipioPublico)} disabled={assinaturaPublicaOtpSending}>
-                    {assinaturaPublicaOtpSending ? "⏳ Enviando OTP..." : "📩 Enviar OTP"}
-                  </button>
-                  <button style={S.btn} onClick={() => validarOtpPublico(municipioPublico)} disabled={assinaturaPublicaOtpValidating}>
-                    {assinaturaPublicaOtpValidating ? "⏳ Validando..." : "✅ Validar OTP"}
-                  </button>
-                </div>
-                {assinaturaPublicaOtpVerifiedAt && (
-                  <div style={{ fontSize: 12, color: "var(--color-text-success)" }}>
-                    OTP validado em {new Date(assinaturaPublicaOtpVerifiedAt).toLocaleString("pt-BR")}
-                  </div>
-                )}
+
                 <input
                   style={S.input}
                   placeholder="Nome do signatário"
@@ -3663,7 +3700,7 @@ export default function App() {
                 <button
                   style={S.btnPrimary}
                   onClick={() => assinarDocumentoPublico(municipioPublico)}
-                  disabled={assinaturaPublicaProcessando || !assinaturaPublicaOtpVerifiedAt || !municipioPublico.documentHash}
+                  disabled={assinaturaPublicaProcessando || !municipioPublico.documentHash}
                 >
                   ✅ Confirmar assinatura
                 </button>
