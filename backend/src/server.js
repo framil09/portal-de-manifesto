@@ -250,10 +250,6 @@ function buildSignatureEmailHtml({ municipio, linkAssinatura, documentoHtml }) {
             <tr><td style="padding:8px 14px;font-size:13px;"><strong>Contato:</strong></td><td style="padding:8px 14px;font-size:13px;"><a href="mailto:secretaria@cimag.org.br" style="color:#0f4c81;">secretaria@cimag.org.br</a> · <a href="https://www.cimag.org.br" style="color:#0f4c81;">www.cimag.org.br</a></td></tr>
           </table>
 
-          <div style="margin:10px 0 4px;padding:12px 14px;background:#fff8e1;border:1px solid #f5c518;border-radius:6px;font-size:13px;">
-            <strong>⚠️ Atenção:</strong> Ao clicar no botão abaixo, você concorda com a captura de data/hora, geolocalização, IP e identificação do aparelho para fins de assinatura eletrônica com validade jurídica.
-          </div>
-
           ${linkBlock}
         </div>
 
